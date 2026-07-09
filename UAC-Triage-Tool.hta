@@ -45,7 +45,7 @@
 <style>
   html{margin:0;height:100%;background:#0d1117}
   body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font-family:Segoe UI,Tahoma,sans-serif;font-size:16px}
-  #content{zoom:0.9}
+  #content{zoom:0.9;width:111.111%;box-sizing:border-box}
   a{color:#58a6ff}
   .mono{font-family:Consolas,"Courier New",monospace}
   .muted{color:#8b949e}
@@ -89,7 +89,7 @@
   tr.row-warn td{background:#241c12}
   tr.ioc td.first{border-left:3px solid #ff6b6b}
   tr.sel td{background:#1c2f4a}
-  .scroll{max-height:58vh;overflow:auto;border:1px solid #30363d;border-radius:8px}
+  .scroll{max-height:58vh;overflow:auto;border:1px solid #30363d;border-radius:8px;width:100%;box-sizing:border-box}
   .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:10px;font-weight:600;margin-right:3px}
   .tag.ioc{background:#3a1416;color:#ff6b6b;border:1px solid #ff6b6b}
   .tag.sus{background:#3a2a10;color:#f0883e;border:1px solid #8a5a2a}
@@ -99,12 +99,12 @@
   .sc1{background:#20301f;color:#7ee787}
   .sc3{background:#3a2a10;color:#f0883e}
   .sc5{background:#3a1416;color:#ff6b6b}
-  .dl{font-family:Consolas,"Courier New",monospace;font-size:11px;max-height:300px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin:4px 0;white-space:pre-wrap;word-break:break-word}
+  .dl{font-family:Consolas,"Courier New",monospace;font-size:11px;max-height:300px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin:4px 0;white-space:pre-wrap;word-break:break-word;width:100%;box-sizing:border-box}
   .kv{color:#8b949e}
   .hl-ioc{color:#ff6b6b;font-weight:700}
   .pgrid td{white-space:normal}
   .pgood{color:#3fb950}.pmiss{color:#8b949e}.pflag{color:#ff6b6b;font-weight:700}
-  #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:150px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px}
+  #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:150px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px;width:100%;box-sizing:border-box}
   .hide{display:none}
   .lnk{cursor:pointer;color:#58a6ff}
   .lnk:hover{text-decoration:underline}
@@ -126,6 +126,7 @@
   <span class="pill" id="verpill">tar: checking&hellip;</span>
   <span class="pill" id="srcpill">no capture loaded</span>
   <span style="float:right">
+    <button class="btn" id="instrBtn" onclick="openInstructions()" title="Download the latest HTML field guide from GitHub and open it in your browser">Instructions</button>
     <button class="btn" id="helpBtn" onclick="openHelp()" title="Help, about &amp; GitHub link">Help</button>
     <button class="btn primary hide" id="selfUpd" onclick="doSelfUpdate()" title="A newer version is available on GitHub">Update</button>
     <button class="btn" id="fdown" title="Smaller text">A&minus;</button>
@@ -247,7 +248,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.3.0";
+var APP_VERSION = "0.3.1";
 var TAR = "";                         // resolved tar.exe
 var TAR_VER = "";
 var QUERY = "";
@@ -1925,6 +1926,11 @@ var GITHUB="https://github.com/bpmorris22/UAC-Triage-Tool";
 function openUrl(u){ try{ new ActiveXObject("WScript.Shell").Run('"'+u+'"',1,false); }catch(e){ setStatus("Could not open browser: "+e.message,"err"); } }
 function openHelp(){ try{ $("helpVer").innerHTML="v"+APP_VERSION; }catch(e){} showEl("helpModal",true); }
 function closeHelp(){ showEl("helpModal",false); }
+/* ---------- field guide (Instructions) ---------- */
+var MANUAL_URL="https://raw.githubusercontent.com/bpmorris22/UAC-Triage-Tool/main/UAC-Triage-Manual.html";
+var MANUAL_FILE="UAC-Triage-Manual.html";
+function openManualFile(path){ try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+path+'"',1,false); return true; } catch(e){ setStatus("Downloaded the field guide, but could not open it: "+e.message,"err"); return false; } }
+function openInstructions(){ var fso=new ActiveXObject("Scripting.FileSystemObject"); var dest=fso.GetSpecialFolder(2)+"\\"+MANUAL_FILE; setStatus("Downloading the field guide from GitHub...","muted"); var ps1=fso.GetSpecialFolder(2)+"\\man_"+uid()+".ps1"; var dq=String(dest).replace(/'/g,"''"); var L=[]; L.push("$ErrorActionPreference='Stop'"); L.push("[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12"); L.push("Invoke-WebRequest -UseBasicParsing -Uri '"+MANUAL_URL+"' -OutFile '"+dq+"' -Headers @{ 'User-Agent'='UAC-Triage-Tool' }"); L.push("if((Get-Item '"+dq+"').Length -lt 2000){ throw 'downloaded file too small' }"); L.push("Write-Output 'MAN_OK'"); try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); } catch(ew){ setStatus("Could not stage the field-guide download: "+ew.message,"err"); return; } var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']); try{ fso.DeleteFile(ps1); }catch(e0){} if((r.log+"").indexOf("MAN_OK")>=0 && fileExists(dest)){ if(openManualFile(dest)) setStatus("Field guide downloaded and opened in your browser.","ok"); appendLog("Field guide: downloaded latest -> "+dest); } else { appendLog("--- field-guide download ---\n"+r.log); if(fileExists(dest)){ if(openManualFile(dest)) setStatus("Download failed (offline?) - opened the previously downloaded copy.","muted"); } else { setStatus("Field-guide download failed (offline, or the file moved). See log; or open it from the GitHub repo.","err"); } } }
 function openDir(){ var d=$("outDir").value; if(!d){ setStatus("No output directory set","err"); return; }
   try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+d+'"',1,false); }catch(e){ setStatus("Could not open folder: "+e.message,"err"); } }
 /* open the containing folder in Explorer with the file pre-selected (or just the folder for a dir) */
@@ -1950,7 +1956,7 @@ function init(){
   loadToolkitIoc();
 
   var zoom=0.9, zContent=$("content");
-  function applyZoom(){ zContent.style.zoom=zoom; var p=Math.round(zoom*100)+"%";
+  function applyZoom(){ zContent.style.zoom=zoom; zContent.style.width=(100/zoom)+"%"; var p=Math.round(zoom*100)+"%";
     $("fup").title="Larger text ("+p+")"; $("fdown").title="Smaller text ("+p+")"; }
   applyZoom();
   $("fup").onclick=function(){ zoom=Math.min(zoom+0.15,2.5); applyZoom(); };

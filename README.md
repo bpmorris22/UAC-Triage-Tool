@@ -25,23 +25,26 @@ UAC is excellent at *collecting* a Unix-like host. This tool is about *reading t
 
 ## What it shows
 
-Seven tabs:
+Eight tabs:
 
 | Tab | Built from | Highlights |
 |---|---|---|
-| **Overview** | `uac.log`, `uptime`, `date` | Run metadata incl. **boot time / uptime**, per-dataset stat cards, cross-dataset **Top findings**, scored **Persistence findings**, package installs, containers, and a presence inventory with "open folder" links |
+| **Overview** | `uac.log`, `uptime`, `date` | Run metadata incl. **boot time / uptime**, per-dataset stat cards, cross-dataset **Top findings**, scored **Persistence findings**, package activity (with attribution), containers, integrity/journal-gap summaries, and a presence inventory with "open folder" links |
 | **Processes** | `ps -ef` + `/proc` maps | Hidden-from-ps processes are **synthesized** into rows; deleted-binary and kernel-thread-masquerade detection |
 | **Network** | `ss` / `netstat` | External connections; links each socket to its owning process |
-| **Logons** | `auth.log`, `last`, `lastb` | SSH accepted/failed, spray detection, and **BRUTEWIN** (an accepted login from an IP that also brute-forced) |
+| **Logons** | `auth.log` (**ISO-8601 + classic syslog**), **wtmp/btmp/lastlog binaries**, `last`, `lastb` | SSH accepted/failed, **sudo / pkexec / pam sessions / account changes / su**, per-account lastlog, spray + **BRUTEWIN** detection, service-account-login and new-login-account flags |
 | **Timeline** | TSK bodyfile | Full filesystem MAC-times; case-window filterable; capped for MFT-scale captures |
+| **Logs** | journal, syslog, kern.log, sysstat, cloud-init | **Journal coverage + gap/generation-change detection**, **log-integrity** checks, **syslog service inventory**, notable events (OOM, promiscuous, USB, new units), **sar** CPU summary, **cloud-init** provisioning baseline |
 | **IOC hits** | tree sweep + `hash_executables` | Line-scan of the whole tree, **plus** SHA1 matches against on-disk (dormant) executables |
-| **Inventory** | ~42 key artifacts | Present/absent map across nine categories, each with an "open folder" link to the raw file |
+| **Inventory** | ~50 key artifacts | Present/absent map across nine categories, each with an "open folder" link to the raw file |
+
+Rotated **`.gz` logs** under `[root]/var/log` are inflated at parse time, so weeks of rotated auth/syslog/dpkg/apt history are included automatically — usually where a logs-only capture's real activity lives.
 
 ![Logons tab — a brute-force that succeeded](screenshots/logon.png)
 
 ## Scoring
 
-Rows are scored with additive rules; **≥ 3 is suspicious**. Highlights: IOC / SHA1 hit (+3), executable under a temp/ram path (+2), hidden path component (+1), interactive/decoder shell one-liner (+2), kernel-thread masquerade (+2), running binary deleted from disk (+3), PID hidden from ps (+3), external/root logins, **brute-force-then-success** (+3), a populated `ld.so.preload` (+3), and more. Full reference in the manual.
+Rows are scored with additive rules; **≥ 3 is suspicious**. Highlights: IOC / SHA1 hit (+3), executable under a temp/ram path (+2), hidden path component (+1), interactive/decoder shell one-liner (+2), kernel-thread masquerade (+2), running binary deleted from disk (+3), PID hidden from ps (+3), external/root logins, **brute-force-then-success** (+3), **service account with an interactive login** (+3), **new account with a login shell** (+4), privilege escalation (sudo/pkexec) running a temp/shell command (+2), a populated `ld.so.preload` (+3), a **journal gap with a generation change** (integrity, high sev), suspicious package installs (nmap/socat/xmrig/…), and more. Full reference in the manual.
 
 ## Command line
 
@@ -49,7 +52,7 @@ Rows are scored with additive rules; **≥ 3 is suspicious**. Highlights: IOC / 
 mshta "UAC-Triage-Tool.hta" "<archiveOrFolder>" ["<outDir>"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]
 ```
 
-`/auto` extracts and parses immediately; `/from` `/to` set a UTC case window (filters the timeline, logons and package installs — **never** affects scoring). A shared `IOC.txt` next to the app is auto-merged at launch.
+`/auto` extracts and parses immediately; `/from` `/to` set a UTC case window (filters the timeline, logons and package activity — **never** affects scoring). A shared `IOC.txt` next to the app is auto-merged at launch.
 
 ## Full manual
 
@@ -59,11 +62,12 @@ See **[`UAC-Triage-Manual.html`](UAC-Triage-Manual.html)** — a self-contained 
 
 - Windows' `tar.exe` (bsdtar) **returns exit code 1** on UAC tarballs because they contain Unix symlinks Windows can't create — this is expected; success is judged by `uac.log` appearing, and the regular files all extract.
 - Encrypted zips (UAC `-P`) can't be opened by bsdtar — extract with 7-Zip first and use **Pick folder…**.
-- All displayed times are **UTC**.
+- Displayed times are **UTC** by default; a **host-TZ toggle** (Logons, Timeline, Logs) re-renders them in the collector's local time using the offset recorded in `uac.log`.
+- Rotated-log inflation and the sar/journal parsers use **PowerShell** (already present on Windows 10+) for `.gz` decompression; if PowerShell is unavailable, rotated history simply stays compressed and everything else still works.
 
 ## Requirements
 
-Windows 10 1803+ (for the bundled `tar.exe`). No install, no .NET dependency, no admin required for reading a collected capture.
+Windows 10 1803+ (for the bundled `tar.exe`). No install, no admin required for reading a collected capture. Rotated-`.gz` inflation uses the built-in PowerShell + .NET `GzipStream` (no separate install).
 
 ## License
 

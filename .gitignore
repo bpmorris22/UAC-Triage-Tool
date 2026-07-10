@@ -1,2 +1,7 @@
 .DS_Store
 Thumbs.db
+
+# runtime output produced when analyzing a capture next to the app
+_Processed/
+*.colw.txt
+runinfo.json

@@ -262,7 +262,16 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.5.0";
+var APP_VERSION = "0.5.1";
+/* v0.5.1 - long-path handling. UAC captures carry paths ~170 chars deep below the extract root
+   (systemd journal names alone are ~92 chars), so a deep output directory pushes files past
+   Windows' classic 260-char MAX_PATH. bsdtar extracts them fine (libarchive uses \\?\), but the
+   HTA's FSO/ADODB layer CANNOT see or read them - they silently vanish from parsing. Fixes:
+   - the extracted tree is listed once via robocopy /L (long-path capable; cmd `dir /s /b` is NOT -
+     field-verified it stops recursing past the limit) into TREELIST;
+   - parseJournal (the known deep offender) enumerates from TREELIST instead of FSO;
+   - every path >259 chars is counted + surfaced as an integrity/coverage finding;
+   - Analyze pre-flights the output-directory length and warns BEFORE extraction. */
 /* v0.5.0 - ir_triage / live_response enrichment (ground-truth: real non-root ir_triage capture):
    - top -b -n1 joined into Processes (%CPU/%MEM); processes seen ONLY in top (transient) get
      synthesized rows; service-account-running-an-interpreter and sustained-CPU scoring.
@@ -333,6 +342,9 @@ var BOOTS = [];                       // journalctl --list-boots rows
 var TOPINFO = null;                   // header stats from top -b -n1
 var SOCKINODE = {};                   // socket inode -> {pid,name} (from per-pid fd.txt)
 var UIDNAME = {};                     // uid -> username (from [root]/etc/passwd)
+/* v0.5.1: long-path support */
+var TREELIST = null;                  // full file list from `dir /s /b` (long-path capable); null = unavailable
+var LONGPATHS = {count:0, samples:[]};// files beyond the classic 260-char limit (FSO-invisible)
 var TIMECAP = {shown:0, total:0};
 var HIDDENPIDS = {};                  // pid -> 1
 var PROCSCORE = {};                   // pid -> score (for network SUSPROC)
@@ -735,6 +747,13 @@ function analyze(){
   if(sz>2147483648){ if(!confirm("This archive is "+fmtSize(sz)+". Extraction will use that much disk and can take a while.\n\nProceed?")) { setStatus("Cancelled.","muted"); return; } }
   var runDir=outdir+"\\"+nowStamp();
   var exDir=runDir+"\\extracted";
+  // v0.5.1 pre-flight: UAC captures nest ~170 chars below the extract root (journal names alone
+  // are ~92). bsdtar will happily create paths past 260, but this app's FSO layer can't read them.
+  if(exDir.length+170>259){
+    if(!confirm("Long-path warning\n\nThe extraction directory is "+exDir.length+" characters:\n"+exDir+"\n\nUAC captures contain paths up to ~170 characters deep (systemd journals), which would exceed Windows' classic 260-character limit. Files past the limit extract fine but are INVISIBLE to this app's parsers.\n\nRecommended: set a shorter Output directory (e.g. C:\\Cases\\"+sanitHost($("hostName").value)+").\n\nContinue anyway?")){
+      setStatus("Cancelled - choose a shorter output directory, then Analyze again.","muted"); return; }
+    appendLog("Long-path pre-flight: continuing with a "+exDir.length+"-char extract dir - a post-parse audit will report any unreadable files.");
+  }
   appendLog("Extracting "+inp+"\n  -> "+exDir+"\n(bsdtar exits 1 on UAC tarballs because of Unix symlinks - that's expected; success is judged by uac.log appearing.)");
   BUSY=true; $("procBtn").disabled=true;
   setStatus("Extracting… a console window shows progress.","muted");
@@ -777,6 +796,7 @@ function parseCapture(root, input){
     INTEGRITY=[]; LOGEVENTS=[];   // appended to by parseLogons / parseSyslogServices / parseJournal / parseSar
     setStatus("Parsing capture…","muted");
     parseMeta(root);
+    buildTreeList(root);          // v0.5.1: long-path-safe listing + >260-char audit (feeds parseJournal)
     inflateLogs(root);            // v0.4: decompress rotated .gz logs BEFORE any log parser reads them
     parseProcesses(root);
     parseTop(root);               // v0.5: %CPU/%MEM + processes only top saw
@@ -1533,18 +1553,31 @@ function parseContainerPs(root, rels, engine){
    "journalctl --vacuum / rm -rf /var/log/journal" anti-forensics tell. */
 function parseJournal(root){
   JOURNAL=null;
-  var fso=new ActiveXObject("Scripting.FileSystemObject");
-  var base=jp(root,"[root]/var/log/journal"); if(!fso.FolderExists(base)) return;
-  var files=[], activeSys=0, activeUser=0;
-  try{ var mids=new Enumerator(fso.GetFolder(base).SubFolders);
-    for(;!mids.atEnd();mids.moveNext()){ var fe=new Enumerator(mids.item().Files);
-      for(;!fe.atEnd();fe.moveNext()){ var nm=fe.item().Name+""; if(!/\.journal$/.test(nm)) continue;
-        var scope=nm.indexOf("user-")===0?"user":"system";
-        var m=nm.match(/@([0-9a-f]{32})-[0-9a-f]{16}-([0-9a-f]{16})\.journal$/i);
-        if(m){ files.push({scope:scope, gen:m[1], usec:parseInt(m[2],16)}); }
-        else { if(scope==="system") activeSys++; else activeUser++; }   // system.journal / user-N.journal = live
-      } }
-  }catch(e){ return; }
+  var files=[], activeSys=0, activeUser=0, names=[], i;
+  // v0.5.1: prefer the long-path-safe cmd tree list - journal paths are the deepest in a capture
+  // and are the first thing FSO loses when the extract root is long.
+  if(TREELIST){
+    var needle="\\log\\journal\\";
+    for(i=0;i<TREELIST.length;i++){ var tp=TREELIST[i];
+      if(lc(tp).indexOf(needle)<0 || !/\.journal$/i.test(tp)) continue;
+      if(!/\\[0-9a-f]{32}\\[^\\]+\.journal$/i.test(tp)) continue;   // <machine-id>\<file>.journal
+      names.push(baseName(tp));
+    }
+  } else {
+    var fso=new ActiveXObject("Scripting.FileSystemObject");
+    var base=jp(root,"[root]/var/log/journal"); if(!fso.FolderExists(base)) return;
+    try{ var mids=new Enumerator(fso.GetFolder(base).SubFolders);
+      for(;!mids.atEnd();mids.moveNext()){ var fe=new Enumerator(mids.item().Files);
+        for(;!fe.atEnd();fe.moveNext()){ var fn=fe.item().Name+""; if(/\.journal$/.test(fn)) names.push(fn); } }
+    }catch(e){ return; }
+  }
+  for(i=0;i<names.length;i++){ var nm=names[i];
+    var scope=nm.indexOf("user-")===0?"user":"system";
+    var m=nm.match(/@([0-9a-f]{32})-[0-9a-f]{16}-([0-9a-f]{16})\.journal$/i);
+    if(m){ files.push({scope:scope, gen:m[1], usec:parseInt(m[2],16)}); }
+    else { if(scope==="system") activeSys++; else activeUser++; }   // system.journal / user-N.journal = live
+  }
+  if(!files.length && !activeSys && !activeUser) return;
   var sys=[]; for(var i=0;i<files.length;i++){ if(files[i].scope==="system") sys.push(files[i]); }
   sys.sort(function(a,b){ return a.usec-b.usec; });
   var gaps=[], ints=[], genSet={}, genN=0;
@@ -1678,6 +1711,29 @@ function checkRotation(root, rel, base){
 }
 
 /* ============ v0.5 - ir_triage / live_response deep parsers ============ */
+
+/* ---- v0.5.1: long-path-safe tree listing + audit ----
+   robocopy in list-only mode (/L) traverses paths beyond MAX_PATH, which FSO cannot - and,
+   FIELD-VERIFIED, neither can cmd's `dir /s /b` (it stops recursing into over-limit directories).
+   One listing per Analyze feeds (a) the journal parser and (b) an audit of paths the FSO-based
+   parsers/IOC sweep silently cannot read. Output lines are tab-indented full paths. */
+function buildTreeList(root){
+  TREELIST=null; LONGPATHS={count:0, samples:[]};
+  try{
+    var r=runBat(['robocopy "'+batEsc(root)+'" "C:\\__uac_rl_null__" /L /E /XJ /NJH /NJS /NDL /NC /NS /NP /FP /R:0 /W:0 > "__LOG__" 2>&1']);
+    var lines=String(r.log).split(/\r?\n/), out=[];
+    for(var i=0;i<lines.length;i++){ var p=trimStr(lines[i]);
+      if(p.length<3 || p.charAt(1)!==":" || p.charAt(2)!=="\\") continue;   // skip robocopy noise
+      out.push(p);
+      if(p.length>259){ LONGPATHS.count++; if(LONGPATHS.samples.length<5) LONGPATHS.samples.push(p); }
+    }
+    if(out.length) TREELIST=out;
+    if(LONGPATHS.count){
+      INTEGRITY.push({check:"long paths", sev:2, detail:nf(LONGPATHS.count)+" file path(s) exceed the classic 260-char Windows limit - the FSO-based parsers and the IOC sweep CANNOT read those files (journal coverage is unaffected; it lists via robocopy). Re-extract to a shorter output directory (e.g. C:\\Cases\\<host>) to include them. Example: "+trunc(LONGPATHS.samples[0]||"",120)});
+      appendLog("LONG-PATH WARNING: "+nf(LONGPATHS.count)+" file(s) beyond 260 chars are unreadable to the parser - see the Logs tab integrity section.");
+    }
+  }catch(e){ TREELIST=null; }
+}
 
 /* ---- top -b -n1: %CPU/%MEM per process + processes ps missed ----
    top runs at a different instant than ps, so a process seen ONLY in top is transient (or hiding
@@ -2207,6 +2263,9 @@ function renderOverview(){
   if(PROFILE.permDeniedTotal){
     var pdShow=PROFILE.permDenied.slice(0,8).join(", ");
     $("ovStats").innerHTML+='<div class="muted" style="font-size:11px;margin-top:4px">Coverage caveat - collector hit '+nf(PROFILE.permDeniedTotal)+' distinct permission-denied path(s): '+esc(trunc(pdShow,140))+(PROFILE.permDeniedTotal>8?" …":"")+'</div>';
+  }
+  if(LONGPATHS.count){
+    $("ovStats").innerHTML+='<div style="font-size:11px;margin-top:4px;color:#e3b341">Coverage caveat - '+nf(LONGPATHS.count)+' file(s) sit beyond the 260-char Windows path limit and are unreadable to the parsers (journal coverage unaffected). Re-extract to a shorter directory to include them.</div>';
   }
   if(TIMECAP.total>TIMECAP.shown){
     $("ovStats").innerHTML+='<div class="muted" style="font-size:11px;margin-top:6px">Timeline capped at '+nf(TIMECAP.shown)+' of '+nf(TIMECAP.total)+' bodyfile rows - narrow with the case window (/from /to) on the Timeline tab.</div>';
@@ -3015,6 +3074,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>tar.exe exits 1 on UAC tarballs</b> - the archive contains Unix symlinks Windows can't create; the regular files all extract and success is judged by <code>uac.log</code> appearing. Skipped-symlink count is logged.</li>
       <li><b>Encrypted zips</b> (UAC <code>-P</code>) can't be opened by bsdtar - extract with 7-Zip first, then use <b>Pick folder…</b>.</li>
       <li>Collected files mirror under a directory literally named <code>[root]</code>. A full-profile <b>bodyfile</b> can be MFT-scale; the timeline is capped at 50,000 stored rows (the full total is still reported) and pre-filtered by the case window - narrow <code>/from /to</code> on a big capture to see everything in range.</li>
+      <li><b>Long paths (v0.5.1):</b> UAC captures nest ~170 chars deep (systemd journal names alone are ~92), so a deep <b>output directory</b> pushes files past Windows' classic 260-char limit. bsdtar extracts them fine, but this app's file layer can't read past the limit - those files vanish from the content parsers and IOC sweep. The app <b>pre-flights the output-dir length and warns before extracting</b>, <b>audits</b> the extracted tree (via robocopy, which is long-path capable) and reports any over-limit files on the Overview and Logs → Log integrity, and journal coverage is computed from filenames so it survives regardless. <b>Fix: set a short Output directory</b> (e.g. <code>C:\Cases\&lt;host&gt;</code>) and re-Analyze to include everything.</li>
       <li>All displayed times are <b>UTC</b> (bodyfile epochs). Collector commands that hung/timed out on the source host show as <em>failed</em> on the Overview and leave empty output files - that's normal.</li>
     </ul>
     <p class="muted" style="font-size:11px">MIT © 2026 Ben Morris - click the link above for the full README &amp; releases.</p>

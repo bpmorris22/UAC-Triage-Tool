@@ -64,6 +64,7 @@ See **[`UAC-Triage-Manual.html`](UAC-Triage-Manual.html)** — a self-contained 
 - Encrypted zips (UAC `-P`) can't be opened by bsdtar — extract with 7-Zip first and use **Pick folder…**.
 - Displayed times are **UTC** by default; a **host-TZ toggle** (Logons, Timeline, Logs) re-renders them in the collector's local time using the offset recorded in `uac.log`.
 - **Non-root captures** are first-class: the Overview states what's missing (shadow, sudoers, other users' /proc details), permission-denied caveats are summarized (capped, not spammed), and socket ownership lost from `ss` is recovered from `/proc/net` + fd inodes.
+- **Long paths** are handled: UAC captures nest ~170 chars deep, so a deep output directory can push files past Windows' 260-char limit. The tool warns before extracting into a too-deep directory, audits the extracted tree (via robocopy, which is long-path capable) and reports any unreadable files, and computes journal coverage from filenames so it survives regardless. Keep the **Output directory short** (e.g. `C:\Cases\<host>`) to include every file.
 - Rotated-log inflation and the sar/journal parsers use **PowerShell** (already present on Windows 10+) for `.gz` decompression; if PowerShell is unavailable, rotated history simply stays compressed and everything else still works.
 
 ## Requirements

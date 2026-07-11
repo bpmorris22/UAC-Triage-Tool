@@ -102,6 +102,16 @@
   .dl{font-family:Consolas,"Courier New",monospace;font-size:11px;max-height:300px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin:4px 0;white-space:pre-wrap;word-break:break-word;width:100%;box-sizing:border-box}
   .kv{color:#8b949e}
   .hl-ioc{color:#ff6b6b;font-weight:700}
+  /* process tree view (v0.7) */
+  .ptree{font-family:Consolas,"Courier New",monospace;font-size:12px;padding:4px 2px}
+  .pnode{white-space:nowrap;padding:1px 0}
+  .pnode .tw{display:inline-block;width:14px;text-align:center;cursor:pointer;color:#8b949e;-moz-user-select:none}
+  .pnode .tw:hover{color:#58a6ff}
+  .pnode .pn{cursor:pointer;padding:1px 4px;border-radius:4px}
+  .pnode .pn:hover{background:#1c2f4a}
+  .pnode.pn-flag>.pn{background:#2a1416}
+  .pnode.pn-warn>.pn{background:#241c12}
+  .pnode .ppid{color:#8b949e}
   .pgrid td{white-space:normal}
   .pgood{color:#3fb950}.pmiss{color:#8b949e}.pflag{color:#ff6b6b;font-weight:700}
   #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:150px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px;width:100%;box-sizing:border-box}
@@ -228,14 +238,20 @@
         <span class="muted">&rarr;</span>
         <input class="txt mono" id="evto" placeholder="to YYYY-MM-DD" style="width:130px">
         <span class="sep"></span>
-        <label style="font-size:12px"><input type="checkbox" id="evSus"> flagged only</label>
+        <select id="evMinScore" title="Minimum score">
+          <option value="0">score: any</option>
+          <option value="1">score &ge; 1</option>
+          <option value="3">score &ge; 3</option>
+          <option value="5">score &ge; 5</option>
+        </select>
+        <select id="evKind" title="Filter by event kind"><option value="">kind: all</option></select>
         <span class="sep"></span>
         <label style="font-size:12px"><input type="checkbox" id="evTz"> host TZ</label>
         <span class="sep"></span>
         <button class="btn" id="evExport">Export &rarr; CSV</button>
         <span class="muted" id="evCount" style="margin-left:8px"></span>
       </div>
-      <div class="scroll" style="max-height:64vh"><table id="evTbl"></table></div>
+      <div class="scroll" id="evScroll" style="max-height:64vh"><table id="evTbl"></table></div>
       <div class="muted" style="font-size:11px;margin-top:6px">One time-sorted axis merging logons, package activity, boots, journal gaps &amp; content, audit/AppArmor and timestamped history. Row tint = score. Case window (/from /to) filters here too.</div>
     </div>
 
@@ -254,7 +270,13 @@
     <!-- TABLE (proc/net/logon/time/ioc) -->
     <div class="card hide" id="tblCard">
       <div class="row" style="margin-bottom:8px">
-        <input class="txt" id="q" placeholder="search this view (command, address, path, IOC…)" style="width:300px">
+        <input class="txt" id="q" placeholder="search this view (command, address, path, IOC…)" style="width:280px">
+        <span id="procTreeWrap" class="hide"><span class="sep"></span>
+          <button class="btn" id="procTreeBtn" title="Toggle between the flat process table and a collapsible parent/child tree.">Tree view</button></span>
+        <span id="logonFilters" class="hide"><span class="sep"></span>
+          <select id="logfUser" title="Filter by user"><option value="">user: all</option></select>
+          <select id="logfSrc" title="Filter by source artifact"><option value="">source: all</option></select>
+          <select id="logfResult" title="Filter by result"><option value="">result: all</option></select></span>
         <span id="dateWrap" class="hide"><span class="sep"></span>
           <input class="txt mono" id="dfrom" placeholder="from YYYY-MM-DD" style="width:140px" title="Filter timeline by mtime/ctime/crtime (UTC)">
           <span class="muted">&rarr;</span>
@@ -284,7 +306,13 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.6.0";
+var APP_VERSION = "0.7.0";
+/* v0.7.0 - UI polish:
+   - Processes table gains a Name column; a collapsible process-TREE view (toggle).
+   - Logons: clickable links to the raw source log, plus User / Source / Result filters.
+   - Events: frozen header, min-score filter and kind filter.
+   - Frozen headers on the Logs-tab Service-inventory and Notable-events tables.
+   - Persistence & system findings table gains a When (date/time) column. */
 /* v0.6.0 - correlation & context release:
    - process tree from ps pid/ppid: parent/child chains in the detail pane, plus webshell
      (interpreter/shell whose parent is a web/db server) and suspicious-reparent scoring.
@@ -2560,6 +2588,8 @@ function setTab(t, quiet){
   showEl("ovCard",isOv); showEl("logsCard",isLogs); showEl("eventsCard",isEv); showEl("tblCard", !isOv && !isLogs && !isEv);
   showEl("dateWrap", t==="time" || t==="logon");
   showEl("tzWrap", t==="time" || t==="logon");
+  showEl("procTreeWrap", t==="proc");
+  showEl("logonFilters", t==="logon");
   if(!isOv && !isLogs && !isEv){ $("q").value=QUERY; }
   if(!quiet) render();
 }
@@ -2679,13 +2709,14 @@ function renderPersFind(){
   showEl("persFindWrap", rows.length>0);
   if(!rows.length){ $("pfTbl").innerHTML=""; return; }
   rows.sort(function(a,b){ return b.score-a.score; });
-  var h="<thead><tr><th>Score</th><th>Source</th><th>Kind</th><th>Command line</th></tr></thead><tbody>";
+  var h="<thead><tr><th>Score</th><th>When</th><th>Source</th><th>Kind</th><th>Command line</th></tr></thead><tbody>";
   for(i=0;i<rows.length;i++){ var r=rows[i]; var rc=rowCls(r);
     h+='<tr'+(rc?(' class="'+rc+'"'):'')+'><td class="first"><span class="sc '+scClass(r.score)+'">'+r.score+'</span>'+tagsHtml(r)+'</td>'
+      +'<td class="mono muted">'+esc(r.epoch?fmtTime(r.epoch,true):"-")+'</td>'
       +'<td class="mono muted" title="'+esc(r.src)+'">'+esc(trunc(r.src,34))+'</td>'
       +'<td class="mono muted">'+esc(r.detail)+'</td>'
-      +'<td class="mono" title="'+esc(r.cmd)+'">'+esc(trunc(r.cmd,120))+'</td></tr>'; }
-  if(hidden>0) h+='<tr><td colspan="4" class="muted">'+nf(hidden)+' benign persistence command line(s) parsed and scored 0 (not shown)</td></tr>';
+      +'<td class="mono" title="'+esc(r.cmd)+'">'+esc(trunc(r.cmd,110))+'</td></tr>'; }
+  if(hidden>0) h+='<tr><td colspan="5" class="muted">'+nf(hidden)+' benign persistence command line(s) parsed and scored 0 (not shown)</td></tr>';
   h+="</tbody>"; $("pfTbl").innerHTML=h; setupColResizeFor($("pfTbl"),"ov_persfind");
 }
 function renderPackages(){
@@ -2754,8 +2785,10 @@ function drawTable(cols, rows, st, tabkey){
 }
 
 /* processes table */
+function procBase(r){ var t=firstToken(r.exe||r.cmd||""); var b=t.substring(t.lastIndexOf("/")+1); b=b.replace(/^[\[(]|[\])]$/g,""); return b||t; }
 var PCOLS=[
   {h:"Score / tags", sk:function(r){return r.score;}, cell:function(r){return scoreCell(r);}},
+  {h:"Name", sk:function(r){return lc(procBase(r));}, cell:function(r){return '<td class="mono" title="'+esc(r.exe||r.cmd)+'">'+esc(trunc(procBase(r),24))+'</td>';}},
   {h:"User", sk:function(r){return lc(r.user);}, cell:function(r){return '<td class="mono">'+esc(r.user)+'</td>';}},
   {h:"PID", sk:function(r){return parseInt(r.pid,10)||0;}, cell:function(r){return '<td class="mono" style="text-align:right">'+esc(r.pid)+(r.hidden?' <span class="tag ioc">hidden</span>':'')+'</td>';}},
   {h:"PPID", sk:function(r){return parseInt(r.ppid,10)||0;}, cell:function(r){return '<td class="mono" style="text-align:right">'+esc(r.ppid)+'</td>';}},
@@ -2770,8 +2803,51 @@ function profileEmptyMsg(n, what){ if(n>0) return false;
                              : ("No "+what+" in this capture.");
   $("tbl").innerHTML='<thead><tr><th>'+esc(what)+'</th></tr></thead><tbody><tr><td class="muted">'+esc(msg)+'</td></tr></tbody>';
   $("count").innerHTML="0 rows"; return true; }
-function renderProc(){ var rows=[]; for(var i=0;i<PROC.length;i++) if(passQ(PROC[i])) rows.push(PROC[i]);
+var PROC_TREE=false, PTREE_COLLAPSED={};
+function renderProc(){
+  if(PROC_TREE){ renderProcTree(); return; }
+  var rows=[]; for(var i=0;i<PROC.length;i++) if(passQ(PROC[i])) rows.push(PROC[i]);
   sortRows(rows,PCOLS,SORT.proc); drawTable(PCOLS,rows,SORT.proc,"proc"); profileEmptyMsg(PROC.length,"processes"); }
+/* collapsible parent/child tree. Roots = rows whose ppid isn't itself a listed process (or ppid 0).
+   passQ (search / flagged-only) hides non-matching LEAVES but keeps ancestors of any match so the
+   path to a hit stays visible. */
+function renderProcTree(){
+  if(profileEmptyMsg(PROC.length,"processes")) return;
+  // which pids to show: a row passes if it matches passQ OR any descendant does
+  var show={}, i;
+  function anyMatch(pid, guard){ if(guard>200) return false; var r=PROCBYPID[pid];
+    var self=r?passQ(r):false; var kids=PROCKIDS[pid]||[]; var kid=false;
+    for(var k=0;k<kids.length;k++){ if(anyMatch(kids[k], guard+1)) kid=true; }
+    if(self||kid) show[pid]=1; return self||kid; }
+  // roots
+  var roots=[]; for(i=0;i<PROC.length;i++){ var r=PROC[i]; var pp=r.ppid;
+    if(!pp || pp==="0" || !PROCBYPID[pp] || pp===r.pid) roots.push(r.pid); }
+  for(i=0;i<roots.length;i++) anyMatch(roots[i], 0);
+  var html='<div class="ptree" id="ptreeRoot">', shown={count:0};
+  roots.sort(function(a,b){ return (parseInt(a,10)||0)-(parseInt(b,10)||0); });
+  for(i=0;i<roots.length;i++){ if(show[roots[i]]) html+=treeNode(roots[i], 0, show, shown); }
+  html+='</div>';
+  $("tbl").innerHTML='<thead><tr><th>Process tree ('+nf(PROC.length)+' processes; click a row for detail, ▸/▾ to fold)</th></tr></thead><tbody><tr><td style="padding:0">'+html+'</td></tr></tbody>';
+  $("count").innerHTML=nf(shown.count)+" shown";
+  window.__viewRows=[]; window.__fullRows=[];
+  applyFreeze();
+}
+function treeNode(pid, depth, show, shown){
+  var r=PROCBYPID[pid]; if(!r) return ""; shown.count++;
+  var kids=PROCKIDS[pid]||[], vis=[]; for(var k=0;k<kids.length;k++){ if(show[kids[k]]) vis.push(kids[k]); }
+  vis.sort(function(a,b){ return (parseInt(a,10)||0)-(parseInt(b,10)||0); });
+  var collapsed=PTREE_COLLAPSED[pid], tw= vis.length ? ('<span class="tw" data-fold="'+esc(pid)+'">'+(collapsed?"▸":"▾")+'</span>') : '<span class="tw">·</span>';
+  var cls= r.score>=5?"pnode pn-flag":(r.score>=3?"pnode pn-warn":"pnode");
+  var pad= (depth*18)+"px";
+  var sc= r.score>0 ? '<span class="sc '+scClass(r.score)+'">'+r.score+'</span> ' : '';
+  var h='<div class="'+cls+'" style="margin-left:'+pad+'">'+tw
+      +'<span class="pn" data-pid="'+esc(pid)+'">'+sc+esc(procBase(r))
+      +' <span class="ppid">('+esc(pid)+(r.user?(" "+esc(r.user)):"")+(r.cpu>=0?(" "+r.cpu.toFixed(0)+"%cpu"):"")+')</span>'
+      + (r.tags.length?(" "+tagsHtml(r)):"")
+      +'</span></div>';
+  if(vis.length && !collapsed){ for(var v=0;v<vis.length;v++) h+=treeNode(vis[v], depth+1, show, shown); }
+  return h;
+}
 
 /* network table */
 var NCOLS=[
@@ -2790,6 +2866,18 @@ function logonDay(ep){ if(!ep) return 0; var d=new Date(ep*1000);
   return Number(d.getUTCFullYear()+""+p2n(d.getUTCMonth()+1)+p2n(d.getUTCDate())); }
 function logonWhenCell(r){ return r.epoch?fmtTime(r.epoch,true):(r.when||"-"); }
 function logonMethodCell(r){ var m=r.method||""; if(r.cmd) m+=(m?" · ":"")+trunc(r.cmd,60); if(r.line && r.result!=="last-login") m+=(m?" · ":"")+r.line; return m; }
+function logonSrcType(r){ return String(r.src||"").split(":")[0]; }
+/* best-effort raw-file path for a logon row's source, for the clickable link */
+function logonSrcPath(r){ if(!LASTROOT) return ""; var st=logonSrcType(r), p="";
+  if(st==="auth.log") p=firstFile(LASTROOT,["[root]/var/log/auth.log","[root]/var/log/secure"]);
+  else if(st==="wtmp") p=jp(LASTROOT,"[root]/var/log/wtmp");
+  else if(st==="btmp") p=jp(LASTROOT,"[root]/var/log/btmp");
+  else if(st==="lastlog") p=jp(LASTROOT,"[root]/var/log/lastlog");
+  else p=firstFile(LASTROOT,["live_response/system/"+st,"live_response/system/last.txt"]);
+  return (p && fileExists(p))?p:""; }
+function logonSrcCell(r){ var p=logonSrcPath(r);
+  return p ? '<td class="mono"><span class="lnk" data-open="'+esc(p)+'" title="Open the raw source file in Explorer">'+esc(r.src)+'</span></td>'
+           : '<td class="mono muted">'+esc(r.src)+'</td>'; }
 var LCOLS=[
   {h:"Score / tags", sk:function(r){return r.score;}, cell:function(r){return scoreCell(r);}},
   {h:"When", sk:function(r){return r.epoch;}, cell:function(r){return '<td class="mono">'+esc(logonWhenCell(r))+'</td>';}},
@@ -2797,11 +2885,27 @@ var LCOLS=[
   {h:"User", sk:function(r){return lc(r.user);}, cell:function(r){return '<td class="mono">'+esc(r.user)+'</td>';}},
   {h:"Source", sk:function(r){return lc(r.ip);}, cell:function(r){return '<td class="mono" title="'+esc(r.ip)+'">'+esc(r.ip||"(local)")+'</td>';}},
   {h:"Method / cmd", sk:function(r){return r.method;}, cell:function(r){return '<td class="mono muted" title="'+esc(r.method+(r.cmd?("  "+r.cmd):""))+'">'+esc(trunc(logonMethodCell(r),70))+'</td>';}},
-  {h:"Source", sk:function(r){return r.src;}, cell:function(r){return '<td class="mono muted">'+esc(r.src)+'</td>';}}
+  {h:"Source", sk:function(r){return r.src;}, cell:function(r){return logonSrcCell(r);}}
 ];
+/* fill a <select> with distinct sorted values, preserving the current selection */
+function fillSelect(id, label, values){ var el=$(id); if(!el) return; var cur=el.value;
+  var opts=['<option value="">'+label+': all</option>']; values.sort();
+  for(var i=0;i<values.length;i++){ var v=values[i]; opts.push('<option value="'+esc(v)+'"'+(v===cur?" selected":"")+'>'+esc(trunc(v,28))+'</option>'); }
+  el.innerHTML=opts.join(""); if(cur){ el.value=cur; } }
+function populateLogonFilters(){
+  var us={}, ss={}, rs={}, i;
+  for(i=0;i<LOGON.length;i++){ var r=LOGON[i]; if(r.user) us[trimStr(r.user)]=1; ss[logonSrcType(r)]=1; rs[r.result]=1; }
+  fillSelect("logfUser","user",keysOf(us)); fillSelect("logfSrc","source",keysOf(ss)); fillSelect("logfResult","result",keysOf(rs));
+}
+function keysOf(o){ var a=[],k; for(k in o){ if(o.hasOwnProperty(k)&&k) a.push(k); } return a; }
 function renderLogon(){
+  populateLogonFilters();
+  var fu=$("logfUser").value, fs=$("logfSrc").value, fr=$("logfResult").value;
   var rows=[]; for(var i=0;i<LOGON.length;i++){ var r=LOGON[i];
     if(!passQ(r)) continue;
+    if(fu && trimStr(r.user)!==fu) continue;
+    if(fs && logonSrcType(r)!==fs) continue;
+    if(fr && r.result!==fr) continue;
     if((DFROM||DTO) && r.epoch){ if(!inDay(logonDay(r.epoch))) continue; }   // case window filters logons too
     rows.push(r); }
   sortRows(rows,LCOLS,SORT.logon); drawTable(LCOLS,rows,SORT.logon,"logon");
@@ -2928,14 +3032,19 @@ function renderLogs(){
   $("logsBody").innerHTML=H.join("");
   var tbls=$("logsBody").getElementsByTagName("table");
   for(var t=0;t<tbls.length;t++){ setupColResizeFor(tbls[t],"logs"+t); }
+  bindFreezeAll($("logsBody"));   // frozen headers on Service inventory / Notable events / etc.
 }
 
 /* ---------- Events tab (v0.6: unified timeline) ---------- */
 var EVFROM=0, EVTO=0, EVQ="";
+function populateEvKind(){ var ks={}, i; for(i=0;i<EVENTS.length;i++) ks[EVENTS[i].kind]=1; fillSelect("evKind","kind",keysOf(ks)); }
 function renderEvents(){
+  populateEvKind();
+  var minSc=parseInt($("evMinScore").value,10)||0, fkind=$("evKind").value;
   var rows=[], i;
   for(i=0;i<EVENTS.length;i++){ var e=EVENTS[i];
-    if($("evSus").checked && e.score<3) continue;
+    if(e.score<minSc) continue;
+    if(fkind && e.kind!==fkind) continue;
     if(EVQ && e.blob.indexOf(EVQ)<0) continue;
     if(EVFROM||EVTO){ var d=eventDay(e.epoch); if(EVFROM && d<EVFROM) continue; if(EVTO && d>EVTO) continue; }
     rows.push(e);
@@ -2953,6 +3062,7 @@ function renderEvents(){
   $("evCount").innerHTML=nf(rows.length)+" event"+(rows.length===1?"":"s")+(shown<rows.length?(" (showing "+nf(shown)+")"):"")
     +(JOURNALX.loaded?"":' · <span class="lnk" onclick="loadJournalWsl()">load journal (WSL)</span> for more');
   setupColResizeFor($("evTbl"),"events");
+  bindFreeze($("evScroll"), $("evTbl"));   // frozen header
 }
 function eventDay(ep){ if(!ep) return 0; var d=new Date(ep*1000);
   return Number(d.getUTCFullYear()+""+p2n(d.getUTCMonth()+1)+p2n(d.getUTCDate())); }
@@ -3153,6 +3263,15 @@ function gripReset(e){ e=e||window.event; document.onmousemove=null; document.on
   setStatus("Column widths reset","ok"); if(e){ if(e.stopPropagation) e.stopPropagation(); e.cancelBubble=true; } return false; }
 function applyFreeze(){ var sc=$("tblScroll"); if(!sc) return; var ths=$("tbl").getElementsByTagName("th"); var y=sc.scrollTop;
   for(var i=0;i<ths.length;i++){ ths[i].style.top=y+"px"; } }
+/* generic frozen-header: HTA/IE has no position:sticky, so on scroll we push each th down by the
+   container's scrollTop (th is position:relative;z-index:3 globally). Works for any scroll+table. */
+function freezeHeads(sc, tbl){ if(!sc||!tbl) return; var ths=tbl.getElementsByTagName("th"), y=sc.scrollTop;
+  for(var i=0;i<ths.length;i++) ths[i].style.top=y+"px"; }
+function bindFreeze(sc, tbl){ if(!sc||!tbl) return; sc.onscroll=function(){ freezeHeads(sc, tbl); }; freezeHeads(sc, tbl); }
+/* freeze every table living inside a container's .scroll children (used for the Logs tab) */
+function bindFreezeAll(container){ if(!container) return; var divs=container.getElementsByTagName("div");
+  for(var i=0;i<divs.length;i++){ if(/\bscroll\b/.test(divs[i].className+"")){ var tb=divs[i].getElementsByTagName("table");
+    if(tb.length) bindFreeze(divs[i], tb[0]); } } }
 
 /* ---------- export / copy ---------- */
 function cq(v){ v=(v==null)?"":String(v); return /[",\r\n]/.test(v)?('"'+v.replace(/"/g,'""')+'"'):v; }
@@ -3409,12 +3528,20 @@ function init(){
   $("evq").onkeyup=function(){ if(qTimer) window.clearTimeout(qTimer); qTimer=window.setTimeout(function(){ EVQ=trimStr($("evq").value).toLowerCase(); render(); },150); };
   $("evfrom").onchange=function(){ EVFROM=dayNum(this.value); render(); };
   $("evto").onchange=function(){ EVTO=dayNum(this.value); render(); };
-  $("evSus").onclick=function(){ render(); };
+  $("evMinScore").onchange=function(){ render(); };
+  $("evKind").onchange=function(){ render(); };
   $("evTz").onclick=function(){ setTz(this.checked); };
   $("evExport").onclick=exportEvents;
+  // Processes: flat table <-> collapsible tree
+  $("procTreeBtn").onclick=function(){ PROC_TREE=!PROC_TREE; this.className=PROC_TREE?"btn on":"btn"; this.innerHTML=PROC_TREE?"Table view":"Tree view"; render(); };
+  // Logon filters
+  $("logfUser").onchange=function(){ render(); };
+  $("logfSrc").onchange=function(){ render(); };
+  $("logfResult").onchange=function(){ render(); };
   $("dfrom").onchange=function(){ DFROM=dayNum(this.value); if(LASTROOT){ reparseTimeline(); } };
   $("dto").onchange=function(){ DTO=dayNum(this.value); if(LASTROOT){ reparseTimeline(); } };
-  $("clearBtn").onclick=function(){ $("q").value=""; QUERY=""; $("susOnly").checked=false; SUSONLY=false; render(); };
+  $("clearBtn").onclick=function(){ $("q").value=""; QUERY=""; $("susOnly").checked=false; SUSONLY=false;
+    try{ $("logfUser").value=""; $("logfSrc").value=""; $("logfResult").value=""; }catch(e){} render(); };
   $("exportBtn").onclick=exportView;
   $("copyBtn").onclick=copyNotes;
 
@@ -3431,6 +3558,9 @@ function init(){
     // element-level actions first (data-open / data-pf can live on a td or span, not the tr)
     var op=attrUp(t,"data-open"); if(op){ openInExplorer(op); return; }
     var pfa=attrUp(t,"data-pf"); if(pfa!=null && pfa!==""){ openPersistFile(parseInt(pfa,10)); return; }
+    // process-tree (v0.7): fold toggle + open detail by pid
+    var fold=attrUp(t,"data-fold"); if(fold){ PTREE_COLLAPSED[fold]=!PTREE_COLLAPSED[fold]; renderProcTree(); return; }
+    var tpid=attrUp(t,"data-pid"); if(tpid){ var pr=PROCBYPID[tpid]; if(pr){ window.__viewRows=[pr]; openRowDetail(0); } return; }
     var n=t; while(n && n.tagName!=="TR"){ n=n.parentNode; if(n&&n.tagName==="TABLE"){ n=null; break; } }
     if(!n||!n.getAttribute) return;
     var pf=n.getAttribute("data-pf");
@@ -3492,6 +3622,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>MITRE ATT&amp;CK (v0.6):</b> every finding is tagged with the relevant technique (shown in the detail pane); the Overview lists the distinct techniques observed.</li>
       <li><b>Journal contents via WSL (v0.6):</b> when <code>wsl.exe</code> and binary journals are present, the Logs tab's <b>Load journal contents (WSL)</b> button runs <code>journalctl -o json</code> against the extracted journal and adds sudo / sshd / unit / seccomp / segfault / audit events to the Events timeline. (Journal <em>coverage/gap</em> analysis needs no WSL.)</li>
       <li><b>Inventory tab</b> - a map of every key artifact (processes, network, logons, accounts, persistence, system, filesystem, logs, containers) showing present/absent, size, and an <b>open folder</b> link that opens the raw file in Explorer. The Persistence &amp; config inventory on Overview has the same open-folder links; click an artifact name there to view its contents inline.</li>
+      <li><b>UI (v0.7):</b> the Processes table has a <b>Name</b> column and a <b>Tree view</b> toggle (collapsible parent/child hierarchy - click ▸/▾ to fold, a row for detail). <b>Logons</b> has User / Source / Result filters and a clickable link to each raw source log. <b>Events</b> has a min-score filter and a kind filter. Long tables keep their <b>header row frozen</b> while scrolling, and <b>Persistence &amp; system findings</b> shows a date/time column.</li>
       <li><b>Resizable columns</b> everywhere - drag the right edge of any column header (it highlights on hover); double-click the edge to reset. Widths persist per view.</li>
     </ul>
     <h3>Command line</h3>

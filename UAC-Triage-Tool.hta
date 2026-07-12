@@ -323,7 +323,17 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.9.0";
+var APP_VERSION = "0.9.1";
+/* v0.9.1 - review pass (no behaviour change beyond the update auto-close):
+   - self-update now AUTO-CLOSES the app after the success prompt (the update ran synchronously,
+     so the .hta on disk is already replaced) - reopen to run the new version.
+   - perf: browser-DB -wal index built only when DBs were found and only from -wal TREELIST entries
+     (was lowercasing the whole file listing every Analyze); SQLECmd-wrapper path resolution cached
+     (was probing disk on every Overview render/keystroke); journalctl jsonStr regexes compiled once
+     per key (was new RegExp per key per line, ~80k/pull).
+   - correctness/robustness: capture-profile label stored raw and escaped at render (was double-
+     escaped in the pill and raw in the modal); header pills cleared at parse start so a failed
+     re-Analyze can't show the previous capture's host/profile. */
 /* v0.9.0 - capture-profile pill + non-full recapture warning:
    - header gains a color-coded profile pill read from uac.log's command line (-p/--profile/-a):
      FULL green / IR TRIAGE + custom amber / OFFLINE blue / LOGS-ONLY red / unknown grey.
@@ -914,6 +924,10 @@ function parseCapture(root, input){
   try{
     LASTROOT=root;
     INTEGRITY=[]; LOGEVENTS=[];   // appended to by parseLogons / parseSyslogServices / parseJournal / parseSar
+    // v0.9.1: clear the header pills up front so a failed/partial re-Analyze can never leave the
+    // PREVIOUS capture's host/profile showing next to an error (mislabeled-evidence guard).
+    $("profpill").className="pill clk hide"; CAPPROF=null;
+    $("srcpill").innerHTML="loading "+esc(baseName(root))+"…";
     setStatus("Parsing capture…","muted");
     parseMeta(root);
     updateProfPill();             // v0.9: color-coded capture-profile pill in the header
@@ -1051,7 +1065,7 @@ function classifyCapture(){
   if(PROFILE.logsOnly) return {key:"logs", label:"LOGS-ONLY", cls:"bad",
     missing:MISS_LIVE.concat(["Bodyfile timeline and on-disk executable hashes","User files: ssh keys, shell histories, browser databases","Accounts/persistence file mirror beyond /var/log"]),
     blurb:"A logs-only artifact list: Processes / Network / Timeline are empty by design - the signal is in Logons, Events and Logs."};
-  if(p) return {key:"customp", label:esc(p).toUpperCase(), cls:"warn",
+  if(p) return {key:"customp", label:p.toUpperCase(), cls:"warn",   // store raw; escape at render (family convention)
     missing:["Whatever profiles/"+p+".yaml omits relative to profiles/full.yaml - review the profile definition"],
     blurb:"A custom/other profile ("+p+") - coverage depends on its artifact list."};
   if(/(^|\s)-a\s/.test(cl)) return {key:"custom", label:"CUSTOM -a", cls:"warn",
@@ -1079,7 +1093,7 @@ function openProfModal(){
   var c=CAPPROF, H=[];
   if(c.key==="full"){ H.push('<h2><span class="ok">&#10004;</span> FULL capture</h2>'); }
   else if(c.key==="unknown"){ H.push("<h2>Collection profile unknown</h2>"); }
-  else { H.push('<h2><span class="'+(c.cls==="bad"?"err":"")+'" style="color:'+(c.cls==="bad"?"#f85149":"#e3b341")+'">&#9888;</span> Not a FULL capture - <b>'+c.label+'</b></h2>'); }
+  else { H.push('<h2><span class="'+(c.cls==="bad"?"err":"")+'" style="color:'+(c.cls==="bad"?"#f85149":"#e3b341")+'">&#9888;</span> Not a FULL capture - <b>'+esc(c.label)+'</b></h2>'); }
   H.push('<p>'+esc(c.blurb)+'</p>');
   if(PROFILE.cmd) H.push('<h3>uac.log command line</h3><div class="dl" style="max-height:70px">'+esc(PROFILE.cmd)+'</div>');
   if(c.missing.length){
@@ -1450,11 +1464,15 @@ function sweepBrowserDbs(root){
       for(b=0;b<ffBases.length;b++) probe(homes[i]+"\\"+ffBases[b], ffFiles);
       for(b=0;b<crBases.length;b++) probe(homes[i]+"\\"+crBases[b], crFiles); }
   }
-  // -wal sidecar presence: TREELIST membership covers long paths; FSO backstops the rest
-  var inTree={}; if(TREELIST){ for(i=0;i<TREELIST.length;i++) inTree[lc(TREELIST[i])]=1; }
+  // -wal sidecar presence: index ONLY the -wal entries in TREELIST (long-path safe), FSO backstops.
+  // Skip the index entirely when nothing was detected (the usual case on ir_triage captures) so a
+  // 100k-file full-profile listing isn't lowercased just to answer "is there a sidecar" for zero hits.
+  var walSet={};
+  if(hits.length && TREELIST){ for(i=0;i<TREELIST.length;i++){ var tl=TREELIST[i];
+    if(tl.length>4 && lc(tl.substring(tl.length-4))==="-wal") walSet[lc(tl)]=1; } }
   for(i=0;i<hits.length;i++){ var hp=hits[i]; if(seen[lc(hp)]) continue; seen[lc(hp)]=1;
     BROWSERDBS.push({ path:hp, browser:bdbBrowserOf(hp), user:bdbUserOf(hp), name:baseName(hp),
-      size:fileSize(hp), wal:(inTree[lc(hp+"-wal")]===1 || fileExists(hp+"-wal")), longPath:(hp.length>259) });
+      size:fileSize(hp), wal:(walSet[lc(hp+"-wal")]===1 || fileExists(hp+"-wal")), longPath:(hp.length>259) });
   }
   BROWSERDBS.sort(function(a,b){ return a.user<b.user?-1:(a.user>b.user?1:(a.path<b.path?-1:1)); });
   // deepest common folder = the analyze-all directory input
@@ -2619,11 +2637,15 @@ function parseJournalJson(text){
     if(JOURNALX.events.length>=8000) break;
   }
 }
-/* minimal, dependency-free JSON scalar extractor for journalctl -o json (flat objects) */
+/* minimal, dependency-free JSON scalar extractor for journalctl -o json (flat objects).
+   Regexes are compiled once per key and memoized - jsonStr runs ~5 keys x up to 20k journal
+   lines per WSL pull, so per-call new RegExp() was ~80k needless compilations. */
+var JSTR_RE={};
 function jsonStr(line, key){
-  var m=line.match(new RegExp('"'+key+'"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"'));
-  if(m) return m[1].replace(/\\"/g,'"').replace(/\\\\/g,"\\");
-  m=line.match(new RegExp('"'+key+'"\\s*:\\s*(\\d+)')); return m?m[1]:null;
+  var re=JSTR_RE[key];
+  if(!re){ re={ s:new RegExp('"'+key+'"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"'), n:new RegExp('"'+key+'"\\s*:\\s*(\\d+)') }; JSTR_RE[key]=re; }
+  var m=line.match(re.s); if(m) return m[1].replace(/\\"/g,'"').replace(/\\\\/g,"\\");
+  m=line.match(re.n); return m?m[1]:null;
 }
 
 /* IOC sweep - walk the extracted tree, line-scan texty files < 5MB */
@@ -2925,12 +2947,13 @@ function renderBrowserDbs(){
 /* wrapper resolution: same folder as this .hta first, else the remembered one-time pick */
 var SQLE_HTA="SQLECmd-Wrapper.hta";
 function sqleSidecarFile(){ var d=htaFolder(); return d?(d+"\\UAC-Triage-Tool.sqlecmd.txt"):""; }
-function resolveSqleWrapper(){
-  var d=htaFolder();
-  if(d && fileExists(d+"\\"+SQLE_HTA)) return d+"\\"+SQLE_HTA;
-  var sc=sqleSidecarFile();
-  if(sc && fileExists(sc)){ var p=trimStr(readUtf8(sc)); if(p && fileExists(p)) return p; }
-  return "";
+var SQLE_WRAPPER_CACHED=null;         // "" = resolved to none; null = not resolved yet (avoids re-probing disk on every Overview render/keystroke)
+function resolveSqleWrapper(force){
+  if(!force && SQLE_WRAPPER_CACHED!==null) return SQLE_WRAPPER_CACHED;
+  var res="", d=htaFolder();
+  if(d && fileExists(d+"\\"+SQLE_HTA)) res=d+"\\"+SQLE_HTA;
+  else { var sc=sqleSidecarFile(); if(sc && fileExists(sc)){ var p=trimStr(readUtf8(sc)); if(p && fileExists(p)) res=p; } }
+  SQLE_WRAPPER_CACHED=res; return res;
 }
 /* output convention (family; Finder v0.15.2 lesson): wrapper-specific sibling folder, so the
    SQLECmd run can never collide with this app's own _Processed\<host>\UAC output */
@@ -3693,7 +3716,7 @@ function checkSelfUpdate(){
 function doSelfUpdate(){
   if(!SELF_ASSET_URL){ setStatus("No update available (or offline).","muted"); return; }
   var target=selfPath(); if(!target || !/\.hta$/i.test(target)){ setStatus("Can't locate this app's own file to update in place.","err"); return; }
-  if(!confirm("Download "+SELF_HTA+" v"+SELF_LATEST+" and replace this file?\n\n"+target+"\n\nAfter it downloads, close and reopen the app.")) return;
+  if(!confirm("Download "+SELF_HTA+" v"+SELF_LATEST+" and replace this file?\n\n"+target+"\n\nThe app will close automatically once the new version is in place - just reopen it to run v"+SELF_LATEST+".")) return;
   setStatus("Downloading v"+SELF_LATEST+"…","muted");
   var fso=new ActiveXObject("Scripting.FileSystemObject"), tmp=fso.GetSpecialFolder(2)+"";
   var ps1=tmp+"\\selfupd_"+uid()+".ps1";
@@ -3707,8 +3730,11 @@ function doSelfUpdate(){
   try{ var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']);
     try{ fso.DeleteFile(ps1); }catch(e0){}
     if((r.log+"").indexOf("SELFUPD_OK")>=0){ var b=$("selfUpd"); if(b) b.className="btn primary hide";
-      setStatus("Updated to v"+SELF_LATEST+" - CLOSE and reopen the app.","ok");
-      try{ alert("Update installed (v"+SELF_LATEST+").\n\nClose and reopen "+SELF_HTA+"."); }catch(e){}
+      setStatus("Updated to v"+SELF_LATEST+" - closing so you can reopen the new version…","ok");
+      // The update ran synchronously (runBat blocks), so the .hta on disk is already the new version.
+      // Auto-close the now-stale running instance after the user acknowledges (family: HTAs close via window.close()).
+      try{ alert("Update installed (v"+SELF_LATEST+").\n\nClick OK to close "+SELF_HTA+" - reopen it to run the new version."); }catch(e){}
+      try{ window.close(); }catch(ec){}
     } else { appendLog("--- self-update ---\n"+r.log); setStatus("Self-update failed - see log.","err"); }
   }catch(e){ setStatus("Self-update failed: "+e.message,"err"); }
 }
@@ -3816,6 +3842,7 @@ function init(){
     if(!/\.hta$/i.test(p) || !fileExists(p)){ setStatus("That is not an .hta file - pick SQLECmd-Wrapper.hta.","err"); return; }
     var sc=sqleSidecarFile();
     if(sc){ try{ writeUtf8(sc,p); appendLog("SQLECmd wrapper location remembered: "+p+" -> "+sc); }catch(e){} }
+    SQLE_WRAPPER_CACHED=null;   // force re-resolve now that a wrapper has been picked
     var pend=BDB_PENDING; BDB_PENDING=null;
     try{ renderBrowserDbs(); }catch(e2){}
     if(pend!=null) sendToSqlecmd(pend);

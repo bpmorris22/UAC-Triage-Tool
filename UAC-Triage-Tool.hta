@@ -55,6 +55,13 @@
   header h1{display:inline-block;font-size:15px;margin:0;font-weight:600;vertical-align:middle}
   header h1 small{color:#8b949e;font-weight:400}
   .pill{display:inline-block;font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:20px;padding:2px 10px;margin-left:8px;vertical-align:middle}
+  /* v0.9: color-coded capture-profile pill */
+  .pill.ok{border-color:#2ea043;color:#3fb950}
+  .pill.warn{border-color:#8a7a2a;color:#e3b341}
+  .pill.bad{border-color:#8b3a3a;color:#ff6b6b}
+  .pill.info{border-color:#1f6feb;color:#58a6ff}
+  .pill.clk{cursor:pointer}
+  .pill.clk:hover{border-color:#58a6ff}
   .wrap{padding:12px 14px}
   .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px}
   .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
@@ -135,6 +142,7 @@
   <h1>UAC Triage Tool <small>- Unix-like Artifacts Collector triage <span id="appver"></span></small></h1>
   <span class="pill" id="verpill">tar: checking&hellip;</span>
   <span class="pill" id="srcpill">no capture loaded</span>
+  <span class="pill clk hide" id="profpill" onclick="openProfModal()" title="Collection profile detected from uac.log's command line - click for coverage details"></span>
   <span style="float:right">
     <button class="btn" id="instrBtn" onclick="openInstructions()" title="Download the latest HTML field guide from GitHub and open it in your browser">Instructions</button>
     <button class="btn" id="helpBtn" onclick="openHelp()" title="Help, about &amp; GitHub link">Help</button>
@@ -227,6 +235,15 @@
       </div>
       <h3 style="margin-top:14px">Persistence &amp; config inventory <span class="muted" style="font-weight:400;text-transform:none">- click a present file to view its contents</span></h3>
       <div class="scroll" style="max-height:30vh"><table id="pTbl" class="pgrid"></table></div>
+      <div id="bdbWrap" class="hide">
+        <h3 style="margin-top:14px">Browser databases <span class="muted" style="font-weight:400;text-transform:none">- SQLite DBs collected under user profiles; hand off to the SQLECmd wrapper (the Zimmerman maps parse Linux-collected Chrome/Firefox DBs unchanged)</span></h3>
+        <div class="row" style="margin-bottom:6px">
+          <button class="btn" id="bdbAllBtn" title="Launch the SQLECmd wrapper with the common parent folder as directory input - it map-matches every database below it in one run. Output lands in _Processed\&lt;host&gt;\SQLECmd beside this app's own output.">Analyze all in SQLECmd &rarr;</button>
+          <span class="muted" id="bdbHint" style="font-size:11px;margin-left:8px"></span>
+        </div>
+        <div class="scroll" style="max-height:22vh"><table id="bdbTbl"></table></div>
+        <input type="file" id="sqlePick" style="display:none">
+      </div>
     </div>
 
     <!-- EVENTS (v0.6: unified time-sorted scored timeline) -->
@@ -306,7 +323,31 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.7.2";
+var APP_VERSION = "0.9.0";
+/* v0.9.0 - capture-profile pill + non-full recapture warning:
+   - header gains a color-coded profile pill read from uac.log's command line (-p/--profile/-a):
+     FULL green / IR TRIAGE + custom amber / OFFLINE blue / LOGS-ONLY red / unknown grey.
+     Click it any time for the coverage breakdown.
+   - non-full LIVE captures (ir_triage, offline_ir_triage, logs-only, custom) pop a once-per-
+     Analyze warning listing the artifact groups that profile excludes, plus a copyable
+     recommended recapture command (sudo ./uac -p full <dest> - keeps the original -f zip and
+     destination). OFFLINE captures get an informational note only (live response is impossible
+     against a mounted image; nagging for a recapture would be pointless), and unknown profiles
+     never nag. Non-root collection is called out inside the popup too. */
+/* v0.8.0 - browser databases -> SQLECmd hand-off:
+   - new sweep detects browser SQLite DBs collected under user profiles: Firefox places.sqlite /
+     cookies.sqlite / formhistory.sqlite (classic, snap and flatpak layouts) and Chromium-family
+     History / Cookies / Web Data / Login Data (Chrome, Chromium, Edge, Brave, Vivaldi, Opera).
+     TREELIST-first (robocopy listing) so >260-char paths are still SEEN; FSO probe fallback.
+   - Overview gains a "Browser databases" section (per-DB size + -wal sidecar presence) with
+     per-row and analyze-all hand-offs to the family SQLECmd wrapper via its mshta CLI
+     (input, output _Processed\<host>\SQLECmd beside this app's own output, case window passed
+     as /from /to). Wrapper location: same folder as this .hta, else a one-time pick remembered
+     in UAC-Triage-Tool.sqlecmd.txt. SQLite is platform-agnostic - the Zimmerman SQLECmd maps
+     parse Linux-collected Chrome/Firefox DBs unchanged.
+   - Inventory gains a synthetic "Browser databases" row. Ground truth: ir_triage does NOT
+     collect these (a snap Firefox came back Crash-Reports-only) - full-profile or
+     -a files/browsers/* captures are what light this up. */
 /* v0.7.2 - freeze headers on the Overview sub-tables too (Recent package installs,
    Persistence findings, Containers, Persistence & config inventory). */
 /* v0.7.1 - center-align Processes PID/PPID/CPU-Mem and Timeline Size/UID columns. */
@@ -424,6 +465,10 @@ var TIMECAP = {shown:0, total:0};
 var HIDDENPIDS = {};                  // pid -> 1
 var PROCSCORE = {};                   // pid -> score (for network SUSPROC)
 var SORT = { proc:{k:0,d:-1}, net:{k:0,d:-1}, logon:{k:0,d:-1}, time:{k:1,d:-1}, ioc:{k:0,d:1} };
+/* v0.8 datasets (browser DBs -> SQLECmd hand-off) */
+var BROWSERDBS = [];                  // detected browser SQLite DBs under user profiles
+var BDB_COMMON = "";                  // deepest common folder of all hits (analyze-all input)
+var BDB_PENDING = null;               // hand-off row (-1 = all) parked while the wrapper is picked
 
 /* ---------- tiny helpers (family) ---------- */
 function $(id){ return document.getElementById(id); }
@@ -871,6 +916,7 @@ function parseCapture(root, input){
     INTEGRITY=[]; LOGEVENTS=[];   // appended to by parseLogons / parseSyslogServices / parseJournal / parseSar
     setStatus("Parsing capture…","muted");
     parseMeta(root);
+    updateProfPill();             // v0.9: color-coded capture-profile pill in the header
     buildTreeList(root);          // v0.5.1: long-path-safe listing + >260-char audit (feeds parseJournal)
     inflateLogs(root);            // v0.4: decompress rotated .gz logs BEFORE any log parser reads them
     parseProcesses(root);
@@ -898,6 +944,7 @@ function parseCapture(root, input){
     parseAudit(root);             // v0.6: auditd + AppArmor/SELinux denials
     parseConfigDrift(root);       // v0.6: sshd_config + pam.d (pushes into PERSFIND)
     buildPersistence(root);
+    sweepBrowserDbs(root);        // v0.8: browser SQLite DBs (Overview hand-off + inventory row)
     buildInventory(root);
     buildIntegrity(root);         // v0.4 (after the above; some checks append during their own parse)
     if(IOCS.length){ setStatus("Sweeping tree for IOCs…","muted"); sweepIocs(root); sweepHashExecutables(root); } else { IOCHITS=[]; }
@@ -915,6 +962,7 @@ function parseCapture(root, input){
     var fl=buildRunSummary();
     setStatus("Parsed "+esc(META.host||baseName(root))+" - "+nf(PROC.length)+" processes, "+nf(NET.length)+" connections, "+nf(LOGON.length)+" logons, "+nf(TIMEL.length)+" timeline rows"
       +(fl&&fl.flagged?(", "+nf(fl.flagged)+" flagged"):"")+".","ok");
+    maybeProfWarn();              // v0.9: non-full live capture -> excluded-artifacts warning
   }catch(e){ setStatus("Parse error: "+e.message,"err"); appendLog("Parse error: "+e.message); }
 }
 
@@ -977,6 +1025,92 @@ function parseMeta(root){
   PROFILE.logsOnly = /(^|\s)-a\s+files\/logs\//.test(cl) || (/\bfiles\//.test(cl) && cl.indexOf("live_response")<0 && cl.indexOf("ir_triage")<0 && cl.indexOf("full")<0);
   if(PROFILE.logsOnly) PROFILE.note="Logs-only collection (uac.log command line: "+trunc(PROFILE.cmd,90)+"). Process / network / timeline / on-disk-hash artifacts were not collected - those tabs are expected to be empty; the Logs tab and Logons carry this capture's signal.";
   PROFILE.nonRoot = !!(META.runAs && lc(META.runAs)!=="root");
+  CAPPROF=classifyCapture();
+}
+
+/* ---------- v0.9: capture-profile pill + non-full recapture warning ----------
+   The profile comes from uac.log's "Command line:" (-p <profile> / --profile <profile>, or a
+   bare -a artifact list). Color code: FULL green, IR TRIAGE / custom amber, OFFLINE blue
+   (live_response impossible against a mounted image - amber would nag pointlessly),
+   LOGS-ONLY red (most restricted), unknown grey. Missing-artifact lists are indicative,
+   not a YAML diff - profiles evolve upstream; compare profiles/full.yaml when it matters. */
+var CAPPROF=null;                     // {key,label,cls,missing[],blurb}
+function classifyCapture(){
+  var cl=lc(PROFILE.cmd||"");
+  var m=cl.match(/(?:^|\s)(?:-p|--profile)[\s=]+([a-z0-9_.\-]+)/), p=m?m[1]:"";
+  var MISS_LIVE=["ALL live_response artifacts: process list, per-PID /proc deep data (LD_PRELOAD / memfd / deleted-exe), network sockets, top, lsof","Running-process SHA1 hashes and hidden-PID checks","Container runtime state (docker/podman ps, inspect, diff)"];
+  var MISS_IR=["Browser databases (files/browsers/*) - history, cookies, downloads, logins","Mail spools and wider per-user application data","The wider [root] file mirror (ir_triage carries a curated config/log subset with size caps)"];
+  if(p==="full") return {key:"full", label:"FULL", cls:"ok", missing:[],
+    blurb:"Full-profile collection - the most complete artifact set UAC offers. All triage views and the browser-database hand-off have their inputs."};
+  if(p==="ir_triage") return {key:"ir", label:"IR TRIAGE", cls:"warn", missing:MISS_IR,
+    blurb:"ir_triage is the fast-response subset: live response, logs, bodyfile and hashes are in, but user-content artifacts are excluded."};
+  if(p==="offline_ir_triage") return {key:"offline_ir", label:"OFFLINE IR", cls:"warn", missing:MISS_LIVE.concat(MISS_IR),
+    blurb:"offline_ir_triage runs against a mounted image: no live response is possible, and the ir_triage user-content exclusions also apply."};
+  if(p==="offline") return {key:"offline", label:"OFFLINE", cls:"info", missing:MISS_LIVE,
+    blurb:"Offline collection against a mounted image - disk artifacts only; live response is not possible for this capture type (a full recapture only helps if the host is still up)."};
+  if(PROFILE.logsOnly) return {key:"logs", label:"LOGS-ONLY", cls:"bad",
+    missing:MISS_LIVE.concat(["Bodyfile timeline and on-disk executable hashes","User files: ssh keys, shell histories, browser databases","Accounts/persistence file mirror beyond /var/log"]),
+    blurb:"A logs-only artifact list: Processes / Network / Timeline are empty by design - the signal is in Logons, Events and Logs."};
+  if(p) return {key:"customp", label:esc(p).toUpperCase(), cls:"warn",
+    missing:["Whatever profiles/"+p+".yaml omits relative to profiles/full.yaml - review the profile definition"],
+    blurb:"A custom/other profile ("+p+") - coverage depends on its artifact list."};
+  if(/(^|\s)-a\s/.test(cl)) return {key:"custom", label:"CUSTOM -a", cls:"warn",
+    missing:["Whatever the -a artifact list omits - compare against profiles/full.yaml"],
+    blurb:"An ad-hoc -a artifact list - coverage depends entirely on what was requested."};
+  return {key:"unknown", label:"PROFILE ?", cls:"", missing:[],
+    blurb:"No -p/--profile or -a switch found on uac.log's command line - profile unknown."};
+}
+function updateProfPill(){
+  var el=$("profpill"); if(!el||!CAPPROF) return;
+  el.className="pill clk"+(CAPPROF.cls?(" "+CAPPROF.cls):"");
+  el.innerHTML=esc(CAPPROF.label);
+  el.title="Collection profile: "+CAPPROF.label+(PROFILE.nonRoot?(" (collected as "+META.runAs+", non-root)"):"")
+    +" - "+(PROFILE.cmd?PROFILE.cmd:"command line unknown")+" - click for coverage details";
+}
+/* recommended recapture: keep their -f zip and destination, force -p full, always sudo */
+function fullCmdExample(){
+  var cl=trimStr(PROFILE.cmd||""), fmt=/(^|\s)-f\s+zip/i.test(cl)?" -f zip":"";
+  var dest="/tmp";
+  if(cl){ var toks=cl.split(/\s+/), last=toks[toks.length-1]; if(/^\//.test(last)) dest=last; }
+  return "sudo ./uac -p full"+fmt+" "+dest;
+}
+function openProfModal(){
+  if(!CAPPROF){ setStatus("No capture parsed yet - the profile pill fills in after Analyze.","muted"); return; }
+  var c=CAPPROF, H=[];
+  if(c.key==="full"){ H.push('<h2><span class="ok">&#10004;</span> FULL capture</h2>'); }
+  else if(c.key==="unknown"){ H.push("<h2>Collection profile unknown</h2>"); }
+  else { H.push('<h2><span class="'+(c.cls==="bad"?"err":"")+'" style="color:'+(c.cls==="bad"?"#f85149":"#e3b341")+'">&#9888;</span> Not a FULL capture - <b>'+c.label+'</b></h2>'); }
+  H.push('<p>'+esc(c.blurb)+'</p>');
+  if(PROFILE.cmd) H.push('<h3>uac.log command line</h3><div class="dl" style="max-height:70px">'+esc(PROFILE.cmd)+'</div>');
+  if(c.missing.length){
+    H.push("<h3>Not collected by this capture (indicative)</h3><ul>");
+    for(var i=0;i<c.missing.length;i++) H.push("<li>"+c.missing[i]+"</li>");
+    H.push("</ul>");
+  }
+  if(PROFILE.nonRoot) H.push('<p><b>Also collected as <span class="err">'+esc(META.runAs)+'</span> (non-root):</b> /etc/shadow, sudoers, other users\' /proc detail, btmp and some logs are missing or partial regardless of profile.</p>');
+  if(c.key!=="full" && c.key!=="offline" && c.key!=="unknown"){
+    H.push("<h3>Recommended recapture (if the host is still available)</h3>");
+    H.push('<div class="dl" style="max-height:60px" id="profCmdBox">'+esc(fullCmdExample())+'</div>');
+    H.push('<p class="muted" style="font-size:12px">Run from the UAC folder on the target (download: github.com/tclahr/uac/releases). <b>sudo</b> closes the non-root coverage gaps; keep <code>-f zip</code> off unless you need zip; the last argument is the output destination. A full capture is larger and slower than '+esc(c.label)+' - expect minutes and hundreds of MB on a desktop host.</p>');
+    H.push('<button class="btn" onclick="copyProfCmd()">Copy command</button> ');
+  } else if(c.key==="offline"){
+    H.push('<p class="muted" style="font-size:12px">If the host is still running, a live <code>sudo ./uac -p full /tmp</code> adds the live-response artifacts an offline capture cannot include.</p>');
+  }
+  H.push('<button class="btn" onclick="closeProfModal()">Close</button>');
+  $("profBody").innerHTML=H.join("");
+  showEl("profModal",true);
+}
+function closeProfModal(){ showEl("profModal",false); }
+function copyProfCmd(){
+  try{ window.clipboardData.setData("Text", fullCmdExample()); setStatus("Recapture command copied to clipboard.","ok"); }
+  catch(e){ setStatus("Copy failed: "+e.message,"err"); }
+}
+/* auto-warn once per Analyze when the capture is positively a lesser LIVE profile; offline is
+   informational (recapture rarely possible) and unknown would just nag */
+function maybeProfWarn(){
+  if(!CAPPROF) return;
+  if(CAPPROF.key==="full"||CAPPROF.key==="offline"||CAPPROF.key==="unknown") return;
+  openProfModal();
 }
 
 /* processes - ps -ef primary, enriched by lstart / exe-path / sha1 / hidden-pids */
@@ -1268,6 +1402,69 @@ function buildInventory(root){
     }catch(e){}
     INVENTORY.push({cat:it.cat, name:it.name, desc:it.desc, kind:it.kind, present:present, size:size, count:count, path:path,
       blob:lc(it.cat+" "+it.name+" "+it.desc)});
+  }
+  // v0.8: synthetic row - browser DBs come from sweepBrowserDbs (runs just before this), not a fixed path
+  var bsz=0, bi; for(bi=0;bi<BROWSERDBS.length;bi++) if(BROWSERDBS[bi].size>0) bsz+=BROWSERDBS[bi].size;
+  INVENTORY.push({cat:"Filesystem", name:"Browser databases",
+    desc:"Firefox places.sqlite / Chromium History etc. under user profiles - hand off to SQLECmd from the Overview. ir_triage does NOT collect these; needs the full profile or -a files/browsers/*",
+    kind:"userfile", present:BROWSERDBS.length>0, size:bsz, count:BROWSERDBS.length,
+    path:(BROWSERDBS.length?BROWSERDBS[0].path:""),
+    blob:lc("filesystem browser databases history firefox chrome chromium places.sqlite sqlite sqlecmd")});
+}
+
+/* ---------- v0.8: browser SQLite databases -> SQLECmd hand-off ----------
+   ir_triage does NOT collect browser DBs (ground truth: a snap Firefox came back with only a
+   Crash Reports log) - this sweep lights up on full-profile / -a files\/browsers\/* captures.
+   Detection is TREELIST-first (robocopy listing; long-path safe), with a bounded FSO probe of
+   the known profile locations (classic / snap / flatpak) when robocopy was unavailable.
+   SQLite is platform-agnostic - the Zimmerman SQLECmd maps parse these DBs unchanged. */
+var BDB_FF_RE=/\/\.mozilla\/firefox\/[^\/]+\/(places|cookies|formhistory)\.sqlite$/i;
+var BDB_CR_RE=/\/(google-chrome|chromium|microsoft-edge|brave-browser|vivaldi|opera)\/[^\/]+\/(History|Cookies|Web Data|Login Data)$/i;
+function bdbUserOf(p){ p=String(p).replace(/\\/g,"/");
+  var m=p.match(/\[root\]\/(?:home\/([^\/]+)|(root))\//i); return m?(m[1]||m[2]):""; }
+function bdbBrowserOf(p){ p=String(p).replace(/\\/g,"/");
+  if(/\/\.mozilla\/firefox\//i.test(p))
+    return /\/snap\/firefox\//i.test(p)?"Firefox (snap)":(/\/\.var\/app\//i.test(p)?"Firefox (flatpak)":"Firefox");
+  var m=p.match(BDB_CR_RE); if(!m) return "browser";
+  var names={"google-chrome":"Chrome","chromium":"Chromium","microsoft-edge":"Edge","brave-browser":"Brave","vivaldi":"Vivaldi","opera":"Opera"};
+  var b=names[m[1].toLowerCase()]||m[1];
+  return /\/snap\//i.test(p)?(b+" (snap)"):b;
+}
+function sweepBrowserDbs(root){
+  BROWSERDBS=[]; BDB_COMMON="";
+  var i, hits=[], seen={};
+  if(TREELIST){
+    for(i=0;i<TREELIST.length;i++){ var tp=TREELIST[i], fp=tp.replace(/\\/g,"/");
+      if(fp.indexOf("/[root]/")<0) continue;                       // browser DBs only live in the mirrored fs
+      if(BDB_FF_RE.test(fp)||BDB_CR_RE.test(fp)) hits.push(tp); }
+  } else {
+    var homes=userHomes(root), fso=new ActiveXObject("Scripting.FileSystemObject");
+    var ffBases=[".mozilla\\firefox","snap\\firefox\\common\\.mozilla\\firefox",".var\\app\\org.mozilla.firefox\\.mozilla\\firefox"];
+    var crBases=[".config\\google-chrome",".config\\chromium",".config\\microsoft-edge",".config\\vivaldi",".config\\opera",".config\\BraveSoftware\\Brave-Browser","snap\\chromium\\common\\chromium"];
+    var ffFiles=["places.sqlite","cookies.sqlite","formhistory.sqlite"], crFiles=["History","Cookies","Web Data","Login Data"];
+    var probe=function(base, files){ if(!fso.FolderExists(base)) return;
+      try{ var e=new Enumerator(fso.GetFolder(base).SubFolders);
+        for(;!e.atEnd();e.moveNext()){ var prof=e.item().Path+"";
+          for(var j=0;j<files.length;j++){ var f=prof+"\\"+files[j]; if(fso.FileExists(f)) hits.push(f); } } }catch(er){} };
+    for(i=0;i<homes.length;i++){ var b;
+      for(b=0;b<ffBases.length;b++) probe(homes[i]+"\\"+ffBases[b], ffFiles);
+      for(b=0;b<crBases.length;b++) probe(homes[i]+"\\"+crBases[b], crFiles); }
+  }
+  // -wal sidecar presence: TREELIST membership covers long paths; FSO backstops the rest
+  var inTree={}; if(TREELIST){ for(i=0;i<TREELIST.length;i++) inTree[lc(TREELIST[i])]=1; }
+  for(i=0;i<hits.length;i++){ var hp=hits[i]; if(seen[lc(hp)]) continue; seen[lc(hp)]=1;
+    BROWSERDBS.push({ path:hp, browser:bdbBrowserOf(hp), user:bdbUserOf(hp), name:baseName(hp),
+      size:fileSize(hp), wal:(inTree[lc(hp+"-wal")]===1 || fileExists(hp+"-wal")), longPath:(hp.length>259) });
+  }
+  BROWSERDBS.sort(function(a,b){ return a.user<b.user?-1:(a.user>b.user?1:(a.path<b.path?-1:1)); });
+  // deepest common folder = the analyze-all directory input
+  if(BROWSERDBS.length){
+    var segs=BROWSERDBS[0].path.split("\\"); segs.pop();
+    for(i=1;i<BROWSERDBS.length;i++){ var s2=BROWSERDBS[i].path.split("\\"), k=0;
+      while(k<segs.length && k<s2.length-1 && lc(segs[k])===lc(s2[k])) k++;
+      segs=segs.slice(0,k); }
+    BDB_COMMON=segs.join("\\");
+    appendLog("Browser DBs: "+nf(BROWSERDBS.length)+" SQLite database(s) under user profiles - see the Overview 'Browser databases' section for the SQLECmd hand-off.");
   }
 }
 
@@ -2645,6 +2842,7 @@ function renderOverview(){
   if(LASTLOGIN.length) s+=statCard(nf(LASTLOGIN.length),"acct last-login","");
   if(EVENTS.length) s+=statCard(nf(EVENTS.length),"timeline events","");
   if(CONFIGDRIFT.length) s+=statCard(nf(CONFIGDRIFT.length),"config drift",CONFIGDRIFT.length?"warn":"");
+  if(BROWSERDBS.length) s+=statCard(nf(BROWSERDBS.length),"browser DBs","");
   if(META.failed) s+=statCard(nf(META.failed),"failed cmds","warn");
   $("ovStats").innerHTML=s;
   // ATT&CK coverage: distinct techniques across all flagged rows
@@ -2700,8 +2898,64 @@ function renderOverview(){
       +'<td>'+pres+'</td><td class="mono">'+esc(sz)+'</td><td class="mono muted">'+esc(it.rel)+'</td><td class="mono">'+open+'</td></tr>';
   }
   ph+="</tbody>"; $("pTbl").innerHTML=ph; setupColResizeFor($("pTbl"),"ov_persist"); freezeById("pTbl");
+  showEl("bdbWrap", BROWSERDBS.length>0);
+  if(BROWSERDBS.length) renderBrowserDbs();
 }
 function scClass(s){ return s>=5?"sc5":(s>=3?"sc3":(s>=1?"sc1":"sc0")); }
+
+/* ---------- v0.8: Browser databases section (Overview) + SQLECmd wrapper launch ---------- */
+function renderBrowserDbs(){
+  var w=resolveSqleWrapper();
+  $("bdbHint").innerHTML = w ? ("wrapper: "+esc(w))
+    : "SQLECmd-Wrapper.hta not located yet - the first hand-off asks you to pick it once (remembered in UAC-Triage-Tool.sqlecmd.txt next to this app).";
+  var h="<thead><tr><th>Browser</th><th>User</th><th>Database</th><th>Size</th><th>WAL</th><th>Analyze</th><th>Raw file</th></tr></thead><tbody>";
+  for(var i=0;i<BROWSERDBS.length;i++){ var r=BROWSERDBS[i];
+    var wal = r.wal ? '<span class="pgood">present</span>'
+      : '<span class="pmiss" title="No -wal sidecar in the capture. If the browser was running at collection, the newest visits may not be in the main DB yet - recollect including -wal/-shm if recent history matters.">absent</span>';
+    var act = r.longPath
+      ? '<span class="muted" title="Path exceeds the 260-char Windows limit - the wrapper cannot open the file directly. Use Analyze all (folder input; SQLECmd itself is long-path capable).">path too long</span>'
+      : '<span class="lnk" data-bdb="'+i+'" title="Launch the SQLECmd wrapper with this database prefilled. Output: _Processed\\&lt;host&gt;\\SQLECmd beside this app\'s output. Review and click Process there.">SQLECmd &rarr;</span>';
+    var raw = r.longPath ? '<span class="muted">-</span>'
+      : '<span class="lnk" data-open="'+esc(r.path)+'" title="Open the containing folder in Explorer (file selected)">open folder</span>';
+    h+='<tr><td>'+esc(r.browser)+'</td><td class="mono">'+esc(r.user||"-")+'</td><td class="mono">'+esc(r.name)+'</td>'
+      +'<td class="mono">'+(r.size>=0?fmtSize(r.size):"-")+'</td><td>'+wal+'</td><td>'+act+'</td><td class="mono">'+raw+'</td></tr>';
+  }
+  h+="</tbody>"; $("bdbTbl").innerHTML=h; setupColResizeFor($("bdbTbl"),"ov_bdb"); freezeById("bdbTbl");
+}
+/* wrapper resolution: same folder as this .hta first, else the remembered one-time pick */
+var SQLE_HTA="SQLECmd-Wrapper.hta";
+function sqleSidecarFile(){ var d=htaFolder(); return d?(d+"\\UAC-Triage-Tool.sqlecmd.txt"):""; }
+function resolveSqleWrapper(){
+  var d=htaFolder();
+  if(d && fileExists(d+"\\"+SQLE_HTA)) return d+"\\"+SQLE_HTA;
+  var sc=sqleSidecarFile();
+  if(sc && fileExists(sc)){ var p=trimStr(readUtf8(sc)); if(p && fileExists(p)) return p; }
+  return "";
+}
+/* output convention (family; Finder v0.15.2 lesson): wrapper-specific sibling folder, so the
+   SQLECmd run can never collide with this app's own _Processed\<host>\UAC output */
+function sqleOutDir(){ return LASTOUTDIR ? (parentDir(LASTOUTDIR)+"\\SQLECmd") : ""; }
+function sendToSqlecmd(i){
+  if(!BROWSERDBS.length) return;
+  var w=resolveSqleWrapper();
+  if(!w){ BDB_PENDING=i;
+    setStatus("Pick SQLECmd-Wrapper.hta (family wrapper - github.com/bpmorris22/SQLECmd-Wrapper). One-time: the location is remembered next to this app.","muted");
+    try{ $("sqlePick").click(); }catch(e){ setStatus("Could not open the file picker: "+e.message,"err"); }
+    return; }
+  var input=(i<0)?BDB_COMMON:BROWSERDBS[i].path;
+  if(!input){ setStatus("Nothing to hand off to SQLECmd","err"); return; }
+  var args='"'+input+'"';
+  var od=sqleOutDir(); if(od) args+=' "'+od+'"';
+  var cf=trimStr($("dfrom").value), ct=trimStr($("dto").value);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(cf)) args+=" /from:"+cf;
+  if(/^\d{4}-\d{2}-\d{2}$/.test(ct)) args+=" /to:"+ct;
+  try{
+    new ActiveXObject("WScript.Shell").Run('mshta.exe "'+w+'" '+args,1,false);
+    var lbl=(i<0)?(nf(BROWSERDBS.length)+" DB(s) via folder input"):baseName(input);
+    setStatus("SQLECmd wrapper launched with "+lbl+" prefilled - review the input there and click Process.","ok");
+    appendLog('SQLECmd hand-off: mshta.exe "'+w+'" '+args);
+  }catch(e){ setStatus("Could not launch the SQLECmd wrapper: "+e.message,"err"); }
+}
 
 /* ---------- Overview sub-sections (v0.2) ---------- */
 function renderPersFind(){
@@ -3555,6 +3809,17 @@ function init(){
   $("iocApply").onclick=applyIocs;
   $("iocLoad").onclick=function(){ $("iocPick").click(); };
   $("iocPick").onchange=function(){ if(this.value){ try{ $("iocBox").value=readUtf8(this.value); applyIocs(); }catch(e){ setStatus("Could not read IOC file: "+e.message,"err"); } } };
+  // v0.8: browser DBs -> SQLECmd hand-off
+  $("bdbAllBtn").onclick=function(){ sendToSqlecmd(-1); };
+  $("sqlePick").onchange=function(){ if(!this.value) return;
+    var p=this.value;
+    if(!/\.hta$/i.test(p) || !fileExists(p)){ setStatus("That is not an .hta file - pick SQLECmd-Wrapper.hta.","err"); return; }
+    var sc=sqleSidecarFile();
+    if(sc){ try{ writeUtf8(sc,p); appendLog("SQLECmd wrapper location remembered: "+p+" -> "+sc); }catch(e){} }
+    var pend=BDB_PENDING; BDB_PENDING=null;
+    try{ renderBrowserDbs(); }catch(e2){}
+    if(pend!=null) sendToSqlecmd(pend);
+  };
   $("detClose").onclick=closeDetail;
   $("detCopy").onclick=copyDetail;
 
@@ -3563,6 +3828,7 @@ function init(){
     if(t && /\bcgrip\b/.test(t.className+"")) return;
     // element-level actions first (data-open / data-pf can live on a td or span, not the tr)
     var op=attrUp(t,"data-open"); if(op){ openInExplorer(op); return; }
+    var bdb=attrUp(t,"data-bdb"); if(bdb!=null && bdb!==""){ sendToSqlecmd(parseInt(bdb,10)); return; }
     var pfa=attrUp(t,"data-pf"); if(pfa!=null && pfa!==""){ openPersistFile(parseInt(pfa,10)); return; }
     // process-tree (v0.7): fold toggle + open detail by pid
     var fold=attrUp(t,"data-fold"); if(fold){ PTREE_COLLAPSED[fold]=!PTREE_COLLAPSED[fold]; renderProcTree(); return; }
@@ -3593,6 +3859,13 @@ function reparseTimeline(){
 }
 window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }catch(e){} };
 </script>
+
+<div id="profModal" class="modal hide" onclick="if((event.srcElement||{}).id==='profModal')closeProfModal()">
+  <div class="mcard" style="max-width:680px">
+    <span class="x" onclick="closeProfModal()" title="Close">&times;</span>
+    <div id="profBody"></div>
+  </div>
+</div>
 
 <div id="helpModal" class="modal hide" onclick="if((event.srcElement||{}).id==='helpModal')closeHelp()">
   <div class="mcard">

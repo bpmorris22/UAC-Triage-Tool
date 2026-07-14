@@ -223,6 +223,17 @@
         <h3 style="margin-top:14px">Persistence &amp; system findings <span class="muted" style="font-weight:400;text-transform:none">- cron / systemd units &amp; timers / authorized_keys / rc.local / ld.so.preload / accounts / suid &amp; capability sweeps / null-passphrase SSH keys / shell histories, scored</span></h3>
         <div class="scroll" style="max-height:26vh"><table id="pfTbl"></table></div>
       </div>
+      <!-- v0.9.2: moved up from the bottom of the Overview - it's actionable, and below the
+           persistence inventory it sat below the fold and got missed on a real full capture -->
+      <div id="bdbWrap" class="hide">
+        <h3 style="margin-top:14px">Browser databases <span class="muted" style="font-weight:400;text-transform:none">- SQLite DBs collected under user profiles; hand off to the SQLECmd wrapper (the Zimmerman maps parse Linux-collected Chrome/Firefox DBs unchanged)</span></h3>
+        <div class="row" style="margin-bottom:6px">
+          <button class="btn primary" id="bdbAllBtn" title="Launch the SQLECmd wrapper with the common parent folder as directory input - it map-matches every database below it in one run. Output lands in _Processed\&lt;host&gt;\SQLECmd beside this app's own output.">Analyze all in SQLECmd &rarr;</button>
+          <span class="muted" id="bdbHint" style="font-size:11px;margin-left:8px"></span>
+        </div>
+        <div class="scroll" style="max-height:22vh"><table id="bdbTbl"></table></div>
+        <input type="file" id="sqlePick" style="display:none">
+      </div>
       <div class="cards3" style="margin-top:12px">
         <div class="col3" id="pkgWrap" style="width:49%">
           <h3>Recent package installs <span class="muted" style="font-weight:400;text-transform:none" id="pkgWinLbl"></span></h3>
@@ -235,15 +246,6 @@
       </div>
       <h3 style="margin-top:14px">Persistence &amp; config inventory <span class="muted" style="font-weight:400;text-transform:none">- click a present file to view its contents</span></h3>
       <div class="scroll" style="max-height:30vh"><table id="pTbl" class="pgrid"></table></div>
-      <div id="bdbWrap" class="hide">
-        <h3 style="margin-top:14px">Browser databases <span class="muted" style="font-weight:400;text-transform:none">- SQLite DBs collected under user profiles; hand off to the SQLECmd wrapper (the Zimmerman maps parse Linux-collected Chrome/Firefox DBs unchanged)</span></h3>
-        <div class="row" style="margin-bottom:6px">
-          <button class="btn" id="bdbAllBtn" title="Launch the SQLECmd wrapper with the common parent folder as directory input - it map-matches every database below it in one run. Output lands in _Processed\&lt;host&gt;\SQLECmd beside this app's own output.">Analyze all in SQLECmd &rarr;</button>
-          <span class="muted" id="bdbHint" style="font-size:11px;margin-left:8px"></span>
-        </div>
-        <div class="scroll" style="max-height:22vh"><table id="bdbTbl"></table></div>
-        <input type="file" id="sqlePick" style="display:none">
-      </div>
     </div>
 
     <!-- EVENTS (v0.6: unified time-sorted scored timeline) -->
@@ -323,7 +325,12 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.9.1";
+var APP_VERSION = "0.9.2";
+/* v0.9.2 - browser-DB hand-off discoverability (operator missed it on a real full capture):
+   - the Browser databases section moved UP the Overview - now directly below Persistence &
+     system findings instead of below the fold under the persistence inventory.
+   - the "browser DBs" Datasets stat card is clickable and jumps to the section (data-jump).
+   - "Analyze all in SQLECmd" is now a primary (blue) button. */
 /* v0.9.1 - review pass (no behaviour change beyond the update auto-close):
    - self-update now AUTO-CLOSES the app after the success prompt (the update ran synchronously,
      so the .hta on disk is already replaced) - reopen to run the new version.
@@ -2864,7 +2871,7 @@ function renderOverview(){
   if(LASTLOGIN.length) s+=statCard(nf(LASTLOGIN.length),"acct last-login","");
   if(EVENTS.length) s+=statCard(nf(EVENTS.length),"timeline events","");
   if(CONFIGDRIFT.length) s+=statCard(nf(CONFIGDRIFT.length),"config drift",CONFIGDRIFT.length?"warn":"");
-  if(BROWSERDBS.length) s+=statCard(nf(BROWSERDBS.length),"browser DBs","");
+  if(BROWSERDBS.length) s+='<span class="stat" data-jump="bdbWrap" style="cursor:pointer" title="Click to jump to the Browser databases section (SQLECmd hand-off)"><span class="n">'+nf(BROWSERDBS.length)+'</span><span class="l">browser DBs</span></span>';
   if(META.failed) s+=statCard(nf(META.failed),"failed cmds","warn");
   $("ovStats").innerHTML=s;
   // ATT&CK coverage: distinct techniques across all flagged rows
@@ -3855,6 +3862,7 @@ function init(){
     if(t && /\bcgrip\b/.test(t.className+"")) return;
     // element-level actions first (data-open / data-pf can live on a td or span, not the tr)
     var op=attrUp(t,"data-open"); if(op){ openInExplorer(op); return; }
+    var jmp=attrUp(t,"data-jump"); if(jmp){ var je=$(jmp); if(je && je.scrollIntoView) try{ je.scrollIntoView(true); }catch(ej){} return; }
     var bdb=attrUp(t,"data-bdb"); if(bdb!=null && bdb!==""){ sendToSqlecmd(parseInt(bdb,10)); return; }
     var pfa=attrUp(t,"data-pf"); if(pfa!=null && pfa!==""){ openPersistFile(parseInt(pfa,10)); return; }
     // process-tree (v0.7): fold toggle + open detail by pid

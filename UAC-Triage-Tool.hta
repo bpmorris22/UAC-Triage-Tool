@@ -325,7 +325,13 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.9.2";
+var APP_VERSION = "0.9.3";
+/* v0.9.3 - SQLECmd wrapper location UX (field finding: clicking the hand-off opened a bare,
+   unexplained "Choose File to Upload" dialog in an unrelated last-used folder):
+   - resolveSqleWrapper now AUTO-DISCOVERS the wrapper in sibling tool folders (family layout:
+     …\Artifacts\<Tool>\ side by side) after checking this app's folder and the sidecar.
+   - if it's genuinely not on disk, a confirm() explains the one-time pick BEFORE the file
+     dialog opens (and Cancel backs out cleanly instead of parking a pending hand-off). */
 /* v0.9.2 - browser-DB hand-off discoverability (operator missed it on a real full capture):
    - the Browser databases section moved UP the Overview - now directly below Persistence &
      system findings instead of below the fold under the persistence inventory.
@@ -2936,7 +2942,7 @@ function scClass(s){ return s>=5?"sc5":(s>=3?"sc3":(s>=1?"sc1":"sc0")); }
 function renderBrowserDbs(){
   var w=resolveSqleWrapper();
   $("bdbHint").innerHTML = w ? ("wrapper: "+esc(w))
-    : "SQLECmd-Wrapper.hta not located yet - the first hand-off asks you to pick it once (remembered in UAC-Triage-Tool.sqlecmd.txt next to this app).";
+    : "SQLECmd-Wrapper.hta not located (checked this app's folder + siblings) - the first hand-off explains, then asks you to browse to it once.";
   var h="<thead><tr><th>Browser</th><th>User</th><th>Database</th><th>Size</th><th>WAL</th><th>Analyze</th><th>Raw file</th></tr></thead><tbody>";
   for(var i=0;i<BROWSERDBS.length;i++){ var r=BROWSERDBS[i];
     var wal = r.wal ? '<span class="pgood">present</span>'
@@ -2959,7 +2965,18 @@ function resolveSqleWrapper(force){
   if(!force && SQLE_WRAPPER_CACHED!==null) return SQLE_WRAPPER_CACHED;
   var res="", d=htaFolder();
   if(d && fileExists(d+"\\"+SQLE_HTA)) res=d+"\\"+SQLE_HTA;
-  else { var sc=sqleSidecarFile(); if(sc && fileExists(sc)){ var p=trimStr(readUtf8(sc)); if(p && fileExists(p)) res=p; } }
+  if(!res){ var sc=sqleSidecarFile(); if(sc && fileExists(sc)){ var p=trimStr(readUtf8(sc)); if(p && fileExists(p)) res=p; } }
+  if(!res && d){
+    // v0.9.3: family layout puts tool folders side by side (…\Artifacts\<Tool>\) - probe the
+    // sibling folders once before falling back to the manual pick (which on a real operator
+    // machine opened a bare, unexplained file dialog). First sibling hit wins; cached above.
+    try{ var fso=new ActiveXObject("Scripting.FileSystemObject"), par=parentDir(d);
+      if(par && par!==d && fso.FolderExists(par)){
+        var e=new Enumerator(fso.GetFolder(par).SubFolders);
+        for(;!e.atEnd();e.moveNext()){ var cand=e.item().Path+"\\"+SQLE_HTA;
+          if(fso.FileExists(cand)){ res=cand; appendLog("SQLECmd wrapper auto-discovered in a sibling folder: "+cand); break; } } }
+    }catch(er){}
+  }
   SQLE_WRAPPER_CACHED=res; return res;
 }
 /* output convention (family; Finder v0.15.2 lesson): wrapper-specific sibling folder, so the
@@ -2969,7 +2986,13 @@ function sendToSqlecmd(i){
   if(!BROWSERDBS.length) return;
   var w=resolveSqleWrapper();
   if(!w){ BDB_PENDING=i;
-    setStatus("Pick SQLECmd-Wrapper.hta (family wrapper - github.com/bpmorris22/SQLECmd-Wrapper). One-time: the location is remembered next to this app.","muted");
+    // v0.9.3: explain BEFORE the picker opens - a bare "Choose File to Upload" dialog with no
+    // context (and an unrelated last-used folder) is what the operator actually saw in the field.
+    if(!confirm("SQLECmd-Wrapper.hta was not found next to this app or in a sibling tool folder.\n\n"
+      +"Click OK, then browse to your SQLECmd-Wrapper.hta - ONE TIME ONLY; the location is remembered in UAC-Triage-Tool.sqlecmd.txt next to this app.\n\n"
+      +"Don't have it? github.com/bpmorris22/SQLECmd-Wrapper (Releases).")){
+      BDB_PENDING=null; setStatus("SQLECmd hand-off cancelled - wrapper not located.","muted"); return; }
+    setStatus("Browse to SQLECmd-Wrapper.hta - the location is remembered after this one pick.","muted");
     try{ $("sqlePick").click(); }catch(e){ setStatus("Could not open the file picker: "+e.message,"err"); }
     return; }
   var input=(i<0)?BDB_COMMON:BROWSERDBS[i].path;

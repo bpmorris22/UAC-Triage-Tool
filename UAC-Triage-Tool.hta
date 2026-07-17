@@ -173,6 +173,8 @@
       <span class="sep"></span>
       <button class="btn" id="iocBtn2" title="Edit the IOC / keyword list used for scoring and the tree-wide sweep.">IOC / keywords&hellip;</button>
       <button class="btn" id="logToggle">Show log</button>
+      <span class="sep"></span>
+      <label style="font-size:12px" id="onlineWrap" title="Look up country + ASN/org for public IPs seen in logons, network connections and web logs via ip-api.com after each Analyze. Only the bare IP list leaves this machine - no case data. Unticked (or offline.txt next to the app) = no outbound requests."><input type="checkbox" id="onlineChk" checked> online geo/ASN lookups</label>
       <span class="muted" id="status" style="margin-left:8px"></span>
     </div>
     <div id="iocWrap" class="hide" style="margin-top:8px">
@@ -194,8 +196,11 @@
         <button class="btn" id="tabProc" data-tab="proc">Processes</button>
         <button class="btn" id="tabNet" data-tab="net">Network</button>
         <button class="btn" id="tabLogon" data-tab="logon">Logons</button>
+        <button class="btn" id="tabUsers" data-tab="users" title="Per-account view: shell, groups, lock state, SSH keys, last login (v0.11)">Users</button>
         <button class="btn" id="tabTime" data-tab="time">Timeline</button>
         <button class="btn" id="tabEvents" data-tab="events">Events</button>
+        <button class="btn" id="tabWeb" data-tab="web" title="Web-server access logs (apache/nginx/httpd) - initial-access hunting (v0.11)">Web logs</button>
+        <button class="btn" id="tabAudit" data-tab="audit" title="auditd execve + login records when audit.log is in the capture (v0.11)">Audit</button>
         <button class="btn" id="tabLogs" data-tab="logs">Logs</button>
         <button class="btn" id="tabIoc" data-tab="ioc">IOC hits</button>
         <button class="btn" id="tabInv" data-tab="inv">Inventory</button>
@@ -220,8 +225,13 @@
         </div>
       </div>
       <div id="persFindWrap" class="hide">
-        <h3 style="margin-top:14px">Persistence &amp; system findings <span class="muted" style="font-weight:400;text-transform:none">- cron / systemd units &amp; timers / authorized_keys / rc.local / ld.so.preload / accounts / suid &amp; capability sweeps / null-passphrase SSH keys / shell histories, scored</span></h3>
+        <h3 style="margin-top:14px">Persistence &amp; system findings <span class="muted" style="font-weight:400;text-transform:none">- cron / systemd units &amp; timers / authorized_keys / rc.local / ld.so.preload / accounts / suid &amp; capability sweeps / null-passphrase SSH keys / shell histories &amp; startup files / motd &amp; apt hooks / modprobe / XDG autostart / PAM modules, scored</span></h3>
         <div class="scroll" style="max-height:26vh"><table id="pfTbl"></table></div>
+      </div>
+      <!-- v0.11: where did the attacker go NEXT - outbound ssh evidence -->
+      <div id="latWrap" class="hide">
+        <h3 style="margin-top:14px">Lateral movement <span class="muted" style="font-weight:400;text-transform:none">- outbound SSH evidence: known_hosts destinations, ~/.ssh/config, ssh/scp/rsync commands in shell histories. CORROB = destination appears in known_hosts AND a typed command.</span></h3>
+        <div class="scroll" style="max-height:24vh"><table id="latTbl"></table></div>
       </div>
       <!-- v0.9.2: moved up from the bottom of the Overview - it's actionable, and below the
            persistence inventory it sat below the fold and got missed on a real full capture -->
@@ -264,6 +274,7 @@
           <option value="5">score &ge; 5</option>
         </select>
         <select id="evKind" title="Filter by event kind"><option value="">kind: all</option></select>
+        <label style="font-size:12px" title="Hide dual-use tooling package installs (nmap, tcpdump, ...) - context rows, not indicators."><input type="checkbox" id="evHideTool"> hide TOOLING</label>
         <span class="sep"></span>
         <label style="font-size:12px"><input type="checkbox" id="evTz"> host TZ</label>
         <span class="sep"></span>
@@ -295,7 +306,8 @@
         <span id="logonFilters" class="hide"><span class="sep"></span>
           <select id="logfUser" title="Filter by user"><option value="">user: all</option></select>
           <select id="logfSrc" title="Filter by source artifact"><option value="">source: all</option></select>
-          <select id="logfResult" title="Filter by result"><option value="">result: all</option></select></span>
+          <select id="logfResult" title="Filter by result"><option value="">result: all</option></select>
+          <button class="btn" id="logonByIpBtn" title="Aggregate logons per source IP: first/last seen, failure + success counts, users tried, geo/ASN. The fastest brute-force triage view. (v0.11)">By source IP</button></span>
         <span id="dateWrap" class="hide"><span class="sep"></span>
           <input class="txt mono" id="dfrom" placeholder="from YYYY-MM-DD" style="width:140px" title="Filter timeline by mtime/ctime/crtime (UTC)">
           <span class="muted">&rarr;</span>
@@ -325,7 +337,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.10.0";
+var APP_VERSION = "0.11.0";
 /* v0.9.4 - SQLECmd wrapper: offer to DOWNLOAD instead of hunt for it (operator request):
    - if the wrapper isn't found anywhere, a hand-off now offers to download the latest
      SQLECmd-Wrapper.hta from GitHub into THIS app's folder (browse stays as the offline
@@ -491,12 +503,24 @@ var EVENTS = [];                      // unified time-sorted scored timeline
 var JOURNALX = { loaded:false, events:[], note:"" };  // journalctl content (WSL, on demand)
 var SRC_EVIDENCE = false;             // v0.10: input was an operator-supplied extracted folder (treat as read-only evidence)
 var INFLCACHE = "";                   // v0.10: per-run dir holding gz-inflated rotated logs for evidence-folder input
+/* ---- v0.11 datasets ---- */
+var WEBLOG = [];                      // web-server access-log rows (apache/nginx/httpd)
+var WEBCAP = {shown:0,total:0};
+var USERS = [];                       // per-account rows (passwd + group + shadow + lastlog + keys)
+var AUDITX = [];                      // auditd EXECVE / USER_LOGIN detail rows
+var AUDITCAP = {shown:0,total:0};
+var LATERAL = [];                     // outbound-SSH evidence: known_hosts / ssh_config / history cmds
+var GEO = {};                         // ip -> {cc,country,asn} from online enrichment (ip-api.com)
+var GEO_STATE = "";                   // "" | running | done | failed | off
+var PIVOT = null;                     // {from,to} epoch window pinned on the Timeline via the pivot action
+var LOGON_BYIP = false;               // Logons tab: aggregate-by-source-IP view toggle
 var WSL = "";                         // resolved wsl.exe or ""
 var CONFIGDRIFT = [];                 // sshd_config / pam.d findings (also pushed into PERSFIND)
 var TIMECAP = {shown:0, total:0};
 var HIDDENPIDS = {};                  // pid -> 1
 var PROCSCORE = {};                   // pid -> score (for network SUSPROC)
-var SORT = { proc:{k:0,d:-1}, net:{k:0,d:-1}, logon:{k:0,d:-1}, time:{k:1,d:-1}, ioc:{k:0,d:1} };
+var SORT = { proc:{k:0,d:-1}, net:{k:0,d:-1}, logon:{k:0,d:-1}, time:{k:1,d:-1}, ioc:{k:0,d:1},
+             web:{k:1,d:-1}, users:{k:1,d:1}, audit:{k:1,d:-1}, logonip:{k:5,d:-1} };   // v0.11
 /* v0.8 datasets (browser DBs -> SQLECmd hand-off) */
 var BROWSERDBS = [];                  // detected browser SQLite DBs under user profiles
 var BDB_COMMON = "";                  // deepest common folder of all hits (analyze-all input)
@@ -1010,6 +1034,7 @@ function parseCapture(root, input){
     // events would silently appear in host B's Events timeline (cross-case contamination).
     JOURNALX={ loaded:false, events:[], note:"" };
     INFLCACHE="";                 // v0.10: per-run gz-inflation cache path (set by inflateLogs)
+    PIVOT=null;                   // v0.11: a pinned timeline pivot window never survives into the next capture
     // v0.9.1: clear the header pills up front so a failed/partial re-Analyze can never leave the
     // PREVIOUS capture's host/profile showing next to an error (mislabeled-evidence guard).
     $("profpill").className="pill clk hide"; CAPPROF=null;
@@ -1058,12 +1083,19 @@ function parseCapture(root, input){
     parseProcNet(root);           // v0.5: needs UIDNAME + SOCKINODE; enriches/extends NET
     parseAudit(root);             // v0.6: auditd + AppArmor/SELinux denials
     parseConfigDrift(root);       // v0.6: sshd_config + pam.d (pushes into PERSFIND)
+    parseWebLogs(root);           // v0.11: apache/nginx/httpd access logs (initial access)
+    parseUsers(root);             // v0.11: per-account table (needs LASTLOGIN from parseLogons)
+    parseAuditDetail(root);       // v0.11: auditd execve/login detail (needs UIDNAME)
+    parseLateral(root);           // v0.11: outbound-SSH evidence (needs PERSFIND histories)
+    parseEtcHosts(root);          // v0.11: non-default /etc/hosts pins
+    parseModulesCheck(root);      // v0.11: loaded modules vs known LKM-rootkit names
     buildPersistence(root);
     sweepBrowserDbs(root);        // v0.8: browser SQLite DBs (Overview hand-off + inventory row)
     buildInventory(root);
     buildIntegrity(root);         // v0.4 (after the above; some checks append during their own parse)
     if(IOCS.length){ setStatus("Sweeping tree for IOCs…","muted"); sweepIocs(root); sweepHashExecutables(root); } else { IOCHITS=[]; }
     rescoreAll();
+    maybeEnrichGeo();             // v0.11: async geo/ASN for public IPs (online toggle; offline.txt wins)
     // provenance + summary
     var produced=[];
     if(IOCS.length){ produced.push({name:"ioc_hits.csv"}); }
@@ -1901,6 +1933,54 @@ function deepParsePersistence(root){
   // authorized_keys (per-user)
   var hits=findUserFiles(root, ".ssh/authorized_keys");
   for(i=0;i<hits.length;i++){ t=readTextCapped(hits[i]); if(t) deepParseAuthorizedKeys("authorized_keys ("+userLabel(hits[i])+")", t); }
+  /* ---- v0.11 sweeps: the persistence spots current hunting write-ups flag that were missed ---- */
+  // update-motd.d: scripts run as ROOT at login; stock Ubuntu files are skipped, the rest parsed
+  var STOCK_MOTD=/^\d{2}[-.](header|help-text|motd-news|landscape|updates|release|reboot|esm|fwupd|contract|livepatch|unminimize|overlayroot|cloudguest|hwe-eol|fw-upgrade)/i;
+  var md=jp(root,"[root]/etc/update-motd.d");
+  if(fso.FolderExists(md)){ try{ var me=new Enumerator(fso.GetFolder(md).Files); for(;!me.atEnd();me.moveNext()){
+    var mf=me.item(); if(STOCK_MOTD.test(mf.Name+"")) continue;
+    t=readTextCapped(mf.Path+""); if(!t) continue; var ml=t.split("\n");
+    for(i=0;i<ml.length;i++){ var mv=trimStr(ml[i]); if(mv===""||mv.charAt(0)==="#") continue;
+      pushPersFind("update-motd.d/"+mf.Name, "non-stock motd script (runs as root at login)", mv); } } }catch(em){} }
+  // APT hooks: Pre/Post-Invoke run arbitrary commands as root on every apt operation
+  var ad=jp(root,"[root]/etc/apt/apt.conf.d");
+  if(fso.FolderExists(ad)){ try{ var ae=new Enumerator(fso.GetFolder(ad).Files); for(;!ae.atEnd();ae.moveNext()){
+    var af=ae.item(); t=readTextCapped(af.Path+""); if(!t) continue; var al=t.split("\n");
+    for(i=0;i<al.length;i++){ var ah=al[i].match(/(Pre-Invoke|Post-Invoke|Post-Invoke-Success|Pre-Install-Pkgs)[^"]*"([^"]{4,})"/i);
+      if(ah) pushPersFind("apt.conf.d/"+af.Name, "APT hook "+ah[1]+" (runs as root on apt runs)", ah[2]); } } }catch(ea){} }
+  // modprobe.d: `install <mod> <cmd>` runs <cmd> INSTEAD of loading the module (stock disable-stubs skipped)
+  var mpd=jp(root,"[root]/etc/modprobe.d");
+  if(fso.FolderExists(mpd)){ try{ var pe=new Enumerator(fso.GetFolder(mpd).Files); for(;!pe.atEnd();pe.moveNext()){
+    var pfl=pe.item(); t=readTextCapped(pfl.Path+""); if(!t) continue; var pl2=t.split("\n");
+    for(i=0;i<pl2.length;i++){ var ph2=trimStr(pl2[i]).match(/^install\s+(\S+)\s+(.+)$/);
+      if(ph2 && !/^\/bin\/(true|false)\s*$/.test(trimStr(ph2[2]))) pushPersFind("modprobe.d/"+pfl.Name, "modprobe install hook ("+ph2[1]+")", ph2[2]); } } }catch(ep3){} }
+  // XDG autostart (system + per-user) - desktop persistence
+  var xdgDirs=[jp(root,"[root]/etc/xdg/autostart")];
+  for(i=0;i<uhomes.length;i++) xdgDirs.push(uhomes[i]+"\\.config\\autostart");
+  for(var xd=0;xd<xdgDirs.length;xd++){ if(!fso.FolderExists(xdgDirs[xd])) continue;
+    try{ var xe=new Enumerator(fso.GetFolder(xdgDirs[xd]).Files); for(;!xe.atEnd();xe.moveNext()){
+      var xf=xe.item(); if(!/\.desktop$/i.test(xf.Name+"")) continue;
+      t=readTextCapped(xf.Path+""); if(!t) continue;
+      var xm=t.match(/^\s*Exec\s*=\s*(.+)$/mi);
+      if(xm) pushPersFind("autostart/"+xf.Name, "XDG autostart Exec", trimStr(xm[1])); } }catch(ex){} }
+  // shell startup files: only lines matching the hostile-history prefilter (stock rc noise skipped)
+  var rcNames=[".bashrc",".profile",".bash_profile",".bash_login",".zshrc",".zprofile",".bash_logout"];
+  for(i=0;i<uhomes.length;i++){ for(var rn=0;rn<rcNames.length;rn++){
+    var rp=uhomes[i]+"\\"+rcNames[rn]; if(!fileExists(rp)) continue;
+    t=readTextCapped(rp); if(!t) continue; var rl2=t.split("\n");
+    for(var r3=0;r3<rl2.length;r3++){ var rv=trimStr(rl2[r3]); if(rv===""||rv.charAt(0)==="#") continue;
+      if(HIST_PREFILTER.test(rv)) pushPersFind("~"+userLabel(uhomes[i]+"\\x")+"/"+rcNames[rn], "shell startup line", rv); } } }
+  // PAM module dirs: a .so NOT named pam_*.so is the 2025 "Plague"-backdoor pattern
+  var pamDirs=["[root]/lib/security","[root]/lib/x86_64-linux-gnu/security","[root]/usr/lib/x86_64-linux-gnu/security","[root]/usr/lib/security","[root]/usr/lib64/security","[root]/lib64/security"];
+  for(i=0;i<pamDirs.length;i++){ var pd2=jp(root,pamDirs[i]); if(!fso.FolderExists(pd2)) continue;
+    try{ var se2=new Enumerator(fso.GetFolder(pd2).Files); for(;!se2.atEnd();se2.moveNext()){
+      var sf2=se2.item(), sn=sf2.Name+"";
+      if(!/\.so(\.\d+)*$/i.test(sn)) continue;
+      if(!/^pam_[a-z0-9_\-]+\.so/i.test(sn))
+        pushPersFind(pamDirs[i].replace("[root]",""), "NON-STANDARD .so in a PAM module directory", sn,
+          {score:3, tag:"PAM-MOD", reason:"a shared object in a PAM directory not named pam_*.so - PAM-backdoor pattern (e.g. Plague 2025); verify it against the package manager"});
+      else if(IOCS.length && iocHit(lc(sn))) pushPersFind(pamDirs[i].replace("[root]",""), "PAM module matching IOC", sn);
+    } }catch(es3){} }
 }
 function userLabel(p){ p=String(p).replace(/\\/g,"/"); var m=p.match(/\[root\]\/(?:home\/([^\/]+)|(root))\//i); return m?(m[1]||m[2]):baseName(parentDir(parentDir(p))); }
 function scanUnits(root, rel){ scanUnitsAbs(jp(root,rel), rel.replace("[root]","")); }
@@ -2621,7 +2701,9 @@ var MITRE={
   "SENS-MOUNT":["T1610","Deploy Container / sensitive mount"],
   "CTR-IMPLANT":["T1505","Server Software Component (container)"],
   "SSHD-CFG":["T1098.004","SSH config weakened"],
-  "PAM-CFG":["T1556.003","Modify Authentication Process: PAM"]
+  "PAM-CFG":["T1556.003","Modify Authentication Process: PAM"],
+  "PAM-MOD":["T1556.003","Modify Authentication Process: non-standard PAM module"],
+  "LATERAL":["T1021.004","Remote Services: SSH (corroborated outbound)"]
 };
 /* distinct techniques for a set of tags: [{id,name}] */
 function techsForTags(tags){ var seen={}, out=[]; for(var i=0;i<tags.length;i++){ var m=MITRE[tags[i]];
@@ -2763,6 +2845,11 @@ function buildEvents(){
   for(i=0;i<LOGEVENTS.length;i++){ var e=LOGEVENTS[i]; if(e.when) pushEvent(e.when,e.kind,(e.sev||0)+ (e.sev>=2?1:0),e.detail,e.src,e.tags||[]); }
   for(i=0;i<JOURNALX.events.length;i++){ var jx=JOURNALX.events[i]; pushEvent(jx.epoch,jx.kind,jx.score,jx.label,"journal",jx.tags||[]); }
   for(i=0;i<PERSFIND.length;i++){ var pf=PERSFIND[i]; if(pf.epoch && pf.score>=2) pushEvent(pf.epoch,"history",pf.score,pf.src+": "+trunc(pf.cmd,60),"history",pf.tags); }
+  // v0.11: flagged web requests + notable auditd rows join the axis (capped - access logs are huge)
+  var wAdd=0; for(i=0;i<WEBLOG.length && wAdd<2000;i++){ var wv=WEBLOG[i];
+    if(wv.score>=3 && wv.epoch){ pushEvent(wv.epoch,"web",wv.score,wv.method+" "+trunc(wv.uri,70)+" from "+wv.ip+" ("+wv.status+")","weblog",wv.tags); wAdd++; } }
+  var aAdd=0; for(i=0;i<AUDITX.length && aAdd<2000;i++){ var ax=AUDITX[i];
+    if(ax.score>=2 && ax.epoch){ pushEvent(ax.epoch,"audit",ax.score,(ax.user?(ax.user+": "):"")+trunc(ax.detail,90),"auditd",ax.tags); aAdd++; } }
   EVENTS.sort(function(a,b){ return a.epoch-b.epoch; });
 }
 function pkgEpoch(p){ var m=String(p.when).match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);   // apt/dpkg logs are host-local
@@ -2956,6 +3043,40 @@ function rescoreAll(){
     if(hasHidden(r.path)){ r.score+=1; r.tags.push("HIDDEN"); r.reasons.push("hidden path component"); }
     if(/s/i.test(String(r.mode))){ r.score+=1; r.tags.push("SETUID"); r.reasons.push("setuid/setgid mode bit"); }
   }
+  // v0.11 datasets: web requests, accounts, auditd rows, lateral evidence
+  for(i=0;i<WEBLOG.length;i++){ r=WEBLOG[i]; r.tags=[]; r.reasons=[]; r.score=0;
+    h=iocHit(r.blob); if(h){ r.score+=3; r.tags.push("IOC"); r.reasons.push("IOC/keyword hit: "+h); }
+    var wu=lc(r.uri);
+    var script=/\.(php[0-9]?|jsp|jspx|asp|aspx|cgi|pl|sh)(\?|$)/.test(wu);
+    if((r.method==="POST"||r.method==="PUT") && script){ r.score+=2; r.tags.push("WEB-POST"); r.reasons.push(r.method+" to a script URI"); }
+    if(/(\.\.\/|%2e%2e|%00|\/etc\/passwd|base64|eval\(|cmd=|exec=|\/bin\/sh|\bwget\b|\bcurl\b)/.test(wu)){ r.score+=2; r.tags.push("WEB-SUSURI"); r.reasons.push("suspicious URI pattern (traversal / encoded payload / command param)"); }
+    if(/(curl|wget|python|libwww|go-http-client|masscan|nikto|sqlmap|zgrab|nuclei|dirbuster|gobuster|feroxbuster|wpscan)/.test(lc(r.ua))){ r.score+=1; r.tags.push("WEB-TOOLUA"); r.reasons.push("tool user-agent: "+trunc(r.ua,40)); }
+    if(script && r.method==="GET" && /(cmd|exec|shell|download|upload)=/.test(wu)){ r.score+=1; r.tags.push("WEB-PARAM"); r.reasons.push("script GET with a command-ish parameter"); }
+  }
+  for(i=0;i<USERS.length;i++){ r=USERS[i]; r.tags=[]; r.reasons=[]; r.score=0;
+    h=iocHit(r.blob); if(h){ r.score+=3; r.tags.push("IOC"); r.reasons.push("IOC/keyword hit: "+h); }
+    if(r.uid===0 && r.user!=="root"){ r.score+=3; r.tags.push("UID0"); r.reasons.push("UID-0 clone - root-equivalent account"); }
+    if(r.pwEmpty===true && r.interactive){ r.score+=3; r.tags.push("EMPTY-PW"); r.reasons.push("EMPTY password field in shadow with an interactive shell"); }
+    if(svcAccount(r.user) && r.interactive && r.uid!==0){ r.score+=2; r.tags.push("SVC-SHELL"); r.reasons.push("service account with an interactive shell ("+r.shell+")"); }
+    if(svcAccount(r.user) && r.keys){ r.score+=2; r.tags.push("SVC-KEYS"); r.reasons.push("service account with "+r.keys+" authorized_keys entr"+(r.keys===1?"y":"ies")); }
+    if(svcAccount(r.user) && r.lastEp){ r.score+=2; r.tags.push("SVC-LOGIN"); r.reasons.push("service account has a real last-login record"); }
+    for(var g3=0;g3<r.groups.length;g3++){ if(r.groups[g3]==="docker"){ r.score+=1; r.tags.push("DOCKER-GRP"); r.reasons.push("docker group member (root-equivalent via the socket)"); break; } }
+  }
+  for(i=0;i<AUDITX.length;i++){ r=AUDITX[i]; r.tags=[]; r.reasons=[]; r.score=0;
+    h=iocHit(r.blob); if(h){ r.score+=3; r.tags.push("IOC"); r.reasons.push("IOC/keyword hit: "+h); }
+    if(r.typ==="EXECVE"){
+      if(underTmp(r.detail)){ r.score+=2; r.tags.push("TMPEXEC"); r.reasons.push("execve of a temp/ram path"); }
+      if(isShellCmd(r.detail)){ r.score+=2; r.tags.push("SHELLCMD"); r.reasons.push("interactive/decoder shell pattern in execve args"); }
+    } else {
+      if(r.res && r.res!=="success"){ r.score+=1; r.tags.push("FAILED"); r.reasons.push("failed "+lc(r.typ.replace("USER_",""))); }
+      if(r.ip && !ipIsLocal(r.ip)){ r.score+=2; r.tags.push("EXTERNAL"); r.reasons.push("source is a public IP "+r.ip); }
+    }
+  }
+  for(i=0;i<LATERAL.length;i++){ r=LATERAL[i]; r.tags=[]; r.reasons=[]; r.score=0;
+    h=iocHit(r.blob); if(h){ r.score+=3; r.tags.push("IOC"); r.reasons.push("IOC/keyword hit: "+h); }
+    if(r.corrob){ r.score+=2; r.tags.push("LATERAL"); r.reasons.push("destination corroborated: in known_hosts AND a typed ssh/scp command"); }
+    if(r.kind==="history" && /^\d/.test(r.dest) && !ipIsLocal(r.dest)){ r.score+=1; r.tags.push("EXTERNAL"); r.reasons.push("typed outbound command to a public IP"); }
+  }
   // v0.2 datasets: logons (own pre-pass rescore), persistence findings, containers all re-score
   // against the current IOC list. hash_executables dormant hits are re-run in the sweep, not here.
   scoreLogons();
@@ -2989,15 +3110,406 @@ function isMasq(cmd){ cmd=trimStr(cmd); if(cmd.charAt(0)==="[") return false;
   var tok=firstToken(cmd); var base=tok.substring(tok.lastIndexOf("/")+1).toLowerCase();
   return /^(kworker|ksoftirqd|kthreadd|kswapd|rcu_)/.test(base); }
 
+/* ============ v0.11 - web logs, users, audit detail, lateral movement, geo/ASN, pivot ============ */
+
+/* ---- web-server access logs (initial access) ----
+   The process-based web-shell check only works when the shell is LIVE at collection time; the
+   plant/interaction evidence is in the access logs, which UAC collects and nothing parsed. */
+var WEBLOG_CAP=20000;
+/* CLF timestamp "17/Jul/2026:12:34:56 +1000" carries its own offset -> UTC epoch directly */
+function clfEpoch(s){
+  var m=String(s).match(/^(\d{1,2})\/(\w{3})\/(\d{4}):(\d{2}):(\d{2}):(\d{2})\s*([+\-]\d{4})?/);
+  if(!m) return 0; var mo=monthNum(m[2]); if(mo==null) return 0;
+  var ep=Math.floor(Date.UTC(+m[3],mo,+m[1],+m[4],+m[5],+m[6])/1000);
+  if(m[7]){ var sign=m[7].charAt(0)==="-"?-1:1; ep-=sign*(parseInt(m[7].substring(1,3),10)*60+parseInt(m[7].substring(3,5),10))*60; }
+  return ep;
+}
+var WEB_RE=/^(\S+)\s+\S+\s+(\S+)\s+\[([^\]]+)\]\s+"([A-Z]+)\s+(\S+)[^"]*"\s+(\d{3})\s+(\S+)(?:\s+"([^"]*)"\s+"([^"]*)")?/;
+function parseWebLogs(root){
+  WEBLOG=[]; WEBCAP={shown:0,total:0};
+  var sets=[["[root]/var/log/apache2",/^(access\.log|other_vhosts_access\.log|ssl_access\.log)(\.\d+)?$/i],
+            ["[root]/var/log/nginx",/^(access\.log|host\.access\.log)(\.\d+)?$/i],
+            ["[root]/var/log/httpd",/^(access_log|ssl_access_log)(\.\d+)?$/i],
+            ["[root]/var/log",/^access[._]log(\.\d+)?$/i]];
+  var win=(DFROM||DTO), s, f, i;
+  for(s=0;s<sets.length;s++){
+    var files=listLogFiles(root, sets[s][0], sets[s][1]);
+    for(f=0;f<files.length;f++){
+      var ls=readLines(files[f]);
+      for(i=0;i<ls.length;i++){
+        var m=ls[i].match(WEB_RE); if(!m) continue;
+        WEBCAP.total++;
+        var ep=clfEpoch(m[3]);
+        if(win && ep && !inDay(bodyDay(ep))) continue;
+        if(WEBLOG.length>=WEBLOG_CAP) continue;
+        var r={kind:"web", ip:m[1], epoch:ep, method:m[4], uri:m[5], status:m[6],
+               bytes:m[7], ref:m[8]||"", ua:m[9]||"", src:baseName(files[f]), score:0, tags:[], reasons:[]};
+        r.blob=lc(m[1]+" "+m[4]+" "+m[5]+" "+m[6]+" "+(m[9]||"")+" "+(m[8]||""));
+        WEBLOG.push(r);
+      }
+    }
+  }
+  WEBCAP.shown=WEBLOG.length;
+  if(WEBCAP.total) appendLog("Web logs: "+nf(WEBCAP.total)+" request line(s) parsed"+(WEBCAP.total>WEBCAP.shown?(" ("+nf(WEBCAP.shown)+" stored - cap; narrow /from /to)"):"")+".");
+}
+
+/* ---- per-account view (passwd + group + shadow + lastlog + per-home artifacts) ---- */
+function parseUsers(root){
+  USERS=[];
+  var pw=readLines(jp(root,"[root]/etc/passwd")); if(!pw.length) return;
+  var gidName={}, userGroups={}, gl=readLines(jp(root,"[root]/etc/group")), i, t;
+  for(i=0;i<gl.length;i++){ t=gl[i].split(":"); if(t.length<3) continue; gidName[t[2]]=t[0];
+    var mem=trimStr(t[3]||""); if(mem){ var ms=mem.split(",");
+      for(var m2=0;m2<ms.length;m2++){ var u2=trimStr(ms[m2]); if(!u2) continue;
+        if(!userGroups[u2]) userGroups[u2]=[]; userGroups[u2].push(t[0]); } } }
+  var shadow={}, sl=readLines(jp(root,"[root]/etc/shadow"));
+  for(i=0;i<sl.length;i++){ t=sl[i].split(":"); if(t.length<3) continue;
+    var h2=t[1]||"";
+    shadow[t[0]]={ locked:(h2.charAt(0)==="!"||h2==="*"), hasPw:(h2!==""&&h2!=="*"&&h2.charAt(0)!=="!"), empty:(h2==="") }; }
+  var haveShadow=sl.length>0;
+  var lastByUid={}; for(i=0;i<LASTLOGIN.length;i++){ lastByUid[LASTLOGIN[i].uid]=LASTLOGIN[i]; }
+  for(i=0;i<pw.length;i++){ t=pw[i].split(":"); if(t.length<7) continue;
+    var user=t[0], uid2=parseInt(t[2],10), gid2=t[3], home=trimStr(t[5]||""), shell=trimStr(t[6]||"");
+    if(isNaN(uid2)) continue;
+    var grps=[]; if(gidName[gid2]) grps.push(gidName[gid2]);
+    if(userGroups[user]) grps=grps.concat(userGroups[user]);
+    var sh=haveShadow?(shadow[user]||null):null, ll=lastByUid[uid2]||null;
+    var keys=0, hist=0;
+    if(home && home!=="/"){
+      var hp=jp(root,"[root]"+home);
+      try{ var ak=hp+"\\.ssh\\authorized_keys"; if(fileExists(ak)){ var kl=readLines(ak);
+        for(var k3=0;k3<kl.length;k3++){ var kt=trimStr(kl[k3]); if(kt && kt.charAt(0)!=="#") keys++; } } }catch(e1){}
+      var hf=[".bash_history",".zsh_history",".sh_history",".ash_history"];
+      for(var h3=0;h3<hf.length;h3++){ try{ var hp2=hp+"\\"+hf[h3]; if(fileExists(hp2)) hist+=readLines(hp2).length; }catch(e2){} }
+    }
+    var interactive=!/(nologin|false|sync|shutdown|halt)$/.test(shell);
+    var r={kind:"user", user:user, uid:uid2, shell:shell, home:home, groups:grps,
+           locked:(sh?sh.locked:null), hasPw:(sh?sh.hasPw:null), pwEmpty:(sh?sh.empty:null),
+           lastEp:(ll?ll.epoch:0), lastIp:(ll?ll.ip:""), keys:keys, hist:hist,
+           interactive:interactive, score:0, tags:[], reasons:[]};
+    r.blob=lc(user+" uid"+uid2+" "+shell+" "+grps.join(" ")+" "+(ll?ll.ip:""));
+    USERS.push(r);
+  }
+  USERS.sort(function(a,b){ return a.uid-b.uid; });
+}
+
+/* ---- auditd detail (the closest Linux gets to process-creation telemetry) ----
+   EXECVE args (incl. hex-encoded), USER_LOGIN / USER_AUTH / USER_CMD results. SYSCALL lines are
+   pre-indexed by audit id so EXECVE rows get their auid attribution. */
+var AUDIT_CAP=20000;
+function audHexDec(s){ if(!/^[0-9A-Fa-f]+$/.test(s) || (s.length%2)) return s;
+  var out=""; for(var i=0;i<s.length;i+=2){ var c=parseInt(s.substring(i,i+2),16);
+    out+=(c>=32&&c<127)?String.fromCharCode(c):" "; } return out; }
+function parseAuditDetail(root){
+  AUDITX=[]; AUDITCAP={shown:0,total:0};
+  var ls=readLogSet(root, "[root]/var/log/audit", /^audit\.log(\.\d+)?$/i);
+  if(!ls.length) return;
+  var sysMeta={}, i, m;
+  for(i=0;i<ls.length;i++){
+    m=ls[i].match(/type=SYSCALL.*?msg=audit\(\d+\.\d+:(\d+)\).*?auid=(\d+).*?comm="([^"]*)"/);
+    if(m) sysMeta[m[1]]={uid:m[2], comm:m[3]};
+  }
+  for(i=0;i<ls.length;i++){ var ln2=ls[i];
+    var tm=ln2.match(/type=(EXECVE|USER_LOGIN|USER_AUTH|USER_CMD)\s+msg=audit\((\d+)\.\d+:(\d+)\)/);
+    if(!tm) continue;
+    AUDITCAP.total++;
+    if(AUDITX.length>=AUDIT_CAP) continue;
+    var typ=tm[1], ep=parseInt(tm[2],10), id=tm[3], det="", u="", am;
+    if(typ==="EXECVE"){
+      var args=[], are=/\ba\d+="([^"]*)"/g;
+      while((am=are.exec(ln2))) args.push(am[1]);
+      if(!args.length){ var hre=/\ba\d+=([0-9A-Fa-f]{2,})/g; while((am=hre.exec(ln2))) args.push(audHexDec(am[1])); }
+      det=args.join(" ");
+      var sm=sysMeta[id]; if(sm) u=(UIDNAME[sm.uid]!=null?UIDNAME[sm.uid]:("uid "+sm.uid));
+    } else {
+      var am2=ln2.match(/acct="?([^"\s]+)"?/), term=ln2.match(/terminal=([^\s,]+)/), res=ln2.match(/res=(\w+)/);
+      u=am2?am2[1]:"";
+      det=typ.toLowerCase().replace("user_","")+(res?(" "+res[1]):"")+(term?(" on "+term[1].replace(/['"]/g,"")):"");
+    }
+    var ipm=(typ!=="EXECVE")?ln2.match(/addr=([0-9a-f.:]+)/i):null;
+    var r={kind:"auditx", typ:typ, epoch:ep, id:id, user:u, detail:det,
+           ip:(ipm && ipm[1]!=="?")?ipm[1]:"", res:(ln2.match(/res=(\w+)/)||["",""])[1], score:0, tags:[], reasons:[]};
+    r.blob=lc(typ+" "+u+" "+det+" "+r.ip);
+    AUDITX.push(r);
+  }
+  AUDITX.sort(function(a,b){ return a.epoch-b.epoch; });
+  AUDITCAP.shown=AUDITX.length;
+  if(AUDITCAP.total) appendLog("auditd: "+nf(AUDITCAP.total)+" execve/login record(s) parsed"+(AUDITCAP.total>AUDITCAP.shown?(" ("+nf(AUDITCAP.shown)+" stored - cap)"):"")+".");
+}
+
+/* ---- lateral movement: where did they go NEXT ----
+   known_hosts destinations + ~/.ssh/config + ssh/scp/rsync commands typed into shell histories.
+   A destination present in known_hosts AND a typed command is corroborated outbound movement. */
+function sshDest(cmd){
+  var c=String(cmd||"");
+  // the ssh/scp token must sit at command position (line start, after ; | && $( ` or a sudo/nohup
+  // wrapper) - otherwise "echo ssh is fun" style lines produce phantom destinations
+  var m=c.match(/(?:^|[;|&]\s*|\$\(\s*|`\s*|\bsudo\s+|\bnohup\s+|\btimeout\s+\S+\s+)(?:ssh|scp|sftp|rsync)\s+(.*)$/); if(!m) return "";
+  var toks=m[1].split(/\s+/), i, t;
+  for(i=0;i<toks.length;i++){ t=toks[i]; if(!t||t.charAt(0)==="-") continue;
+    var am=t.match(/^[A-Za-z0-9_.\-]+@([A-Za-z0-9_.\-]+)/); if(am) return am[1];
+  }
+  for(i=0;i<toks.length;i++){ t=toks[i]; if(!t||t.charAt(0)==="-"||t.indexOf("/")>=0) continue;
+    if(/^[A-Za-z0-9][A-Za-z0-9_.\-]*(:.*)?$/.test(t) && !/^(ssh|scp|sftp|rsync)$/i.test(t)) return t.split(":")[0];
+  }
+  return "";
+}
+function parseLateral(root){
+  LATERAL=[];
+  var homes=userHomes(root), destSeen={}, i, j;
+  function mark(d,k){ d=lc(trimStr(d)); if(!d) return; if(!destSeen[d]) destSeen[d]={}; destSeen[d][k]=true; }
+  for(i=0;i<homes.length;i++){
+    var u=userLabel(homes[i]+"\\x");
+    var kh=homes[i]+"\\.ssh\\known_hosts";
+    if(fileExists(kh)){ var kl=readLines(kh), hashed=0;
+      for(j=0;j<kl.length;j++){ var t=trimStr(kl[j]); if(!t||t.charAt(0)==="#") continue;
+        if(t.charAt(0)==="|"){ hashed++; continue; }
+        var first=t.split(/\s+/)[0], hosts=first.split(",");
+        for(var h4=0;h4<hosts.length && h4<4;h4++){
+          var d=trimStr(hosts[h4]).replace(/^\[/,"").replace(/\]:\d+$/,"").replace(/\]$/,"");
+          if(!d) continue;
+          LATERAL.push({kind:"known_hosts", user:u, dest:d, evidence:"~/.ssh/known_hosts", epoch:0, score:0, tags:[], reasons:[], blob:lc(d+" "+u+" known_hosts")});
+          mark(d,"kh");
+        } }
+      if(hashed) LATERAL.push({kind:"known_hosts", user:u, dest:"("+hashed+" hashed)", evidence:"~/.ssh/known_hosts - HashKnownHosts on, destinations unrecoverable", epoch:0, score:0, tags:[], reasons:[], blob:"hashed known_hosts "+lc(u)});
+    }
+    var cfg=homes[i]+"\\.ssh\\config";
+    if(fileExists(cfg)){ var cl2=readLines(cfg), curHost="";
+      for(j=0;j<cl2.length;j++){ var c2=trimStr(cl2[j]), m5;
+        if((m5=c2.match(/^Host\s+(.+)$/i))) curHost=m5[1];
+        else if((m5=c2.match(/^(HostName|ProxyJump|ProxyCommand)\s+(.+)$/i))){
+          LATERAL.push({kind:"ssh_config", user:u, dest:trunc(m5[2],60), evidence:"~/.ssh/config "+(curHost?("Host "+curHost+" - "):"")+m5[1], epoch:0, score:0, tags:[], reasons:[], blob:lc(m5[2]+" "+u+" sshconfig "+m5[1])});
+          if(!/^proxycommand$/i.test(m5[1])) mark(firstToken(m5[2]),"cfg");
+        } } }
+  }
+  for(i=0;i<PERSFIND.length;i++){ var pf=PERSFIND[i];
+    if(!/history/i.test(pf.src||"")) continue;
+    if(!/\b(ssh|scp|sftp|rsync)\b/.test(lc(pf.cmd||""))) continue;
+    var d6=sshDest(pf.cmd); if(!d6) continue;
+    var hu=(String(pf.src).match(/\(([^)]+)\)/)||["",""])[1];
+    LATERAL.push({kind:"history", user:hu, dest:d6, evidence:trunc(pf.cmd,90), epoch:pf.epoch||0, score:0, tags:[], reasons:[], blob:lc(d6+" "+hu+" history "+pf.cmd)});
+    mark(d6,"hist");
+  }
+  for(i=0;i<LATERAL.length;i++){ var L=LATERAL[i]; var ds=destSeen[lc(L.dest)];
+    if(ds && ds.kh && ds.hist) L.corrob=true; }
+  if(LATERAL.length) appendLog("Lateral movement: "+nf(LATERAL.length)+" outbound-SSH evidence row(s) (known_hosts / ssh config / typed commands) - see the Overview panel.");
+}
+
+/* ---- /etc/hosts pins (blocklist-style 127.0.0.1 / 0.0.0.0 lines are skipped) ---- */
+function parseEtcHosts(root){
+  var ls=readLines(jp(root,"[root]/etc/hosts")), i, n=0;
+  for(i=0;i<ls.length;i++){ var t=trimStr(ls[i]); if(!t||t.charAt(0)==="#") continue;
+    var toks=t.split(/\s+/); if(toks.length<2) continue;
+    var ip=toks[0], names=toks.slice(1).join(" ");
+    if(/^(127\.|0\.0\.0\.0$|255\.|::1$|::$|f[ef]0[0-9a-f]::)/i.test(ip)) continue;
+    if(/^(localhost|ip6-)/i.test(toks[1])) continue;
+    n++;
+    var pub=!ipIsLocal(ip), sev=pub?2:1;
+    var note=pub?" - PUBLIC pin: silently redirects that name (update/C2 hijack tell)":"";
+    var hit=IOCS.length?iocHit(lc(t)):"";
+    if(hit){ sev=3; note+=" [IOC: "+hit+"]"; }
+    LOGEVENTS.push({when:0, kind:"hosts", detail:"/etc/hosts pins "+trunc(names,60)+" -> "+ip+note, sev:sev, src:"/etc/hosts"});
+  }
+  if(n) appendLog("/etc/hosts: "+n+" non-default mapping(s) surfaced on the Logs tab.");
+}
+
+/* ---- loaded-module check against known LKM-rootkit names (complements the taint flag) ---- */
+var BAD_MODULES=/^(diamorphine|reptile|suterusu|kovid|adore|enyelkm|hiddenwasp|phalanx|vlany|azazel|jynx|umbreon|bedevil|rkduck|puszek|nuk3gh0st)/i;
+function parseModulesCheck(root){
+  var ls=readLines(firstFile(root,["live_response/system/lsmod.txt","live_response/system/proc_modules.txt"]));
+  if(!ls.length) return;
+  for(var i=0;i<ls.length;i++){ var m=trimStr(ls[i]).match(/^([A-Za-z0-9_\-]+)\s+\d+/); if(!m) continue;
+    var name=m[1];
+    if(BAD_MODULES.test(name)) INTEGRITY.push({check:"kernel module", sev:3, detail:"loaded kernel module '"+name+"' matches a known LKM-rootkit family name"});
+    else if(IOCS.length && iocHit(lc(name))) INTEGRITY.push({check:"kernel module", sev:3, detail:"loaded kernel module '"+name+"' matches an IOC term"});
+  }
+}
+
+/* ---- pivot: anchor-and-expand from any timestamped row into the filesystem timeline ---- */
+function pivotTimeline(ep){
+  ep=parseInt(ep,10)||0;
+  if(!ep){ setStatus("No usable timestamp on that row to pivot on.","err"); return; }
+  PIVOT={from:ep-900, to:ep+900, center:ep};
+  setTab("time");
+  setStatus("Timeline pivoted to ±15 min around "+fmtTime(ep,true)+" "+tzLabel()+" - clear it from the banner next to the row count.","ok");
+}
+function clearPivot(){ PIVOT=null; render(); }
+
+/* ---- geo/ASN enrichment (online, optional - "online geo/ASN lookups" checkbox) ----
+   POSTs ONLY the distinct public-IP list (no case data, no hostnames) to ip-api.com/batch.
+   The free endpoint is HTTP + 15 req/min; responses are parsed with regexes (never eval'd)
+   and rendered escaped. offline.txt beside the app force-disables this like every other
+   outbound feature. Results cache in GEO for the session. */
+var GEO_MAX_IPS=300;
+function geoAllowed(){ try{ return !offlineMode() && $("onlineChk") && $("onlineChk").checked; }catch(e){ return false; } }
+function geoTip(ip){ var g=GEO[ip]; return g?((g.country||g.cc)+(g.asn?(" · "+g.asn):"")):""; }
+function geoTag(ip){ var g=GEO[ip]; if(!g||!g.cc) return "";
+  return ' <span class="tag info" title="'+esc((g.country||"")+(g.asn?(" · "+g.asn):""))+'">'+esc(g.cc)+'</span>'; }
+function collectPublicIps(){
+  var seen={}, out=[], i;
+  function add(ip){ ip=trimStr(ip||""); if(!ip||seen[ip]||GEO[ip]) return;
+    if(!/^[0-9a-fA-F.:]+$/.test(ip) || ip.indexOf(".")<0 && ip.indexOf(":")<0) return;
+    if(ipIsLocal(ip)) return; seen[ip]=1; if(out.length<GEO_MAX_IPS) out.push(ip); }
+  for(i=0;i<LOGON.length;i++) add(LOGON[i].ip);
+  for(i=0;i<NET.length;i++) add(NET[i].peerAddr);
+  for(i=0;i<WEBLOG.length;i++) add(WEBLOG[i].ip);
+  for(i=0;i<AUDITX.length;i++) add(AUDITX[i].ip);
+  return out;
+}
+function maybeEnrichGeo(){
+  if(!geoAllowed()){ GEO_STATE="off"; return; }
+  if(GEO_STATE==="running") return;
+  var need=collectPublicIps();
+  if(!need.length) return;
+  GEO_STATE="running";
+  appendLog("Geo/ASN: resolving "+need.length+" public IP(s) via ip-api.com batch - only the bare IP list leaves this machine.");
+  geoBatch(need, 0);
+}
+function geoBatch(list, off){
+  if(off>=list.length){ GEO_STATE="done"; appendLog("Geo/ASN: enrichment complete ("+list.length+" IPs)."); try{ render(); }catch(er){} return; }
+  var chunk=list.slice(off, off+100);
+  try{
+    var x=new ActiveXObject("MSXML2.XMLHTTP.6.0");
+    x.open("POST","http://ip-api.com/batch?fields=status,country,countryCode,as,query",true);
+    try{ x.setRequestHeader("Content-Type","application/json"); }catch(eh){}
+    x.onreadystatechange=function(){ if(x.readyState!==4) return;
+      var ok=false;
+      try{
+        if(x.status===200){
+          ok=true;
+          // regex extraction, NOT eval/JSON - a tampered HTTP response must never execute
+          var re=/\{[^{}]*\}/g, om, txt=x.responseText+"";
+          while((om=re.exec(txt))){ var o=om[0];
+            var q=(o.match(/"query"\s*:\s*"([^"]*)"/)||["",""])[1]; if(!q) continue;
+            var st=(o.match(/"status"\s*:\s*"([^"]*)"/)||["",""])[1]; if(st!=="success") continue;
+            GEO[q]={ cc:(o.match(/"countryCode"\s*:\s*"([^"]*)"/)||["",""])[1],
+                     country:(o.match(/"country"\s*:\s*"([^"]*)"/)||["",""])[1],
+                     asn:(o.match(/"as"\s*:\s*"([^"]*)"/)||["",""])[1] };
+          }
+        } else { GEO_STATE="failed"; appendLog("Geo/ASN: HTTP "+x.status+" from ip-api.com - enrichment stopped (rate limit or offline)."); }
+      }catch(e2){ GEO_STATE="failed"; }
+      if(ok) window.setTimeout(function(){ geoBatch(list, off+100); }, 4500);   // free tier: 15 req/min
+    };
+    x.send('["'+chunk.join('","')+'"]');   // chunk entries are regex-validated IP literals
+  }catch(e){ GEO_STATE="failed"; appendLog("Geo/ASN enrichment failed: "+e.message); }
+}
+
+/* ---- v0.11 renderers ---- */
+var WCOLS=[
+  {h:"Score / tags", sk:function(r){return r.score;}, cell:function(r){return scoreCell(r);}},
+  {h:"When", sk:function(r){return r.epoch;}, cell:function(r){return '<td class="mono">'+esc(fmtTime(r.epoch,true))+'</td>';}},
+  {h:"Client IP", sk:function(r){return lc(r.ip);}, cell:function(r){return '<td class="mono" title="'+esc(geoTip(r.ip))+'">'+esc(r.ip)+geoTag(r.ip)+'</td>';}},
+  {h:"Method", sk:function(r){return r.method;}, cell:function(r){return '<td class="mono" style="text-align:center">'+esc(r.method)+'</td>';}},
+  {h:"Status", sk:function(r){return parseInt(r.status,10)||0;}, cell:function(r){return '<td class="mono" style="text-align:center">'+esc(r.status)+'</td>';}},
+  {h:"URI", sk:function(r){return lc(r.uri);}, cell:function(r){return '<td class="mono" title="'+esc(r.uri)+'">'+esc(trunc(r.uri,90))+'</td>';}},
+  {h:"User-Agent", sk:function(r){return lc(r.ua);}, cell:function(r){return '<td class="mono muted" title="'+esc(r.ua)+'">'+esc(trunc(r.ua,40))+'</td>';}},
+  {h:"Log", sk:function(r){return r.src;}, cell:function(r){return '<td class="mono muted">'+esc(r.src)+'</td>';}}
+];
+function renderWeb(){
+  var rows=[]; for(var i=0;i<WEBLOG.length;i++){ var r=WEBLOG[i];
+    if(!passQ(r)) continue;
+    if((DFROM||DTO) && r.epoch && !inDay(logonDay(r.epoch))) continue;
+    rows.push(r); }
+  sortRows(rows,WCOLS,SORT.web); drawTable(WCOLS,rows,SORT.web,"web");
+  if(!WEBLOG.length){
+    $("tbl").innerHTML='<thead><tr><th>Web-server access logs</th></tr></thead><tbody><tr><td class="muted">No apache2/nginx/httpd access logs in this capture (looked under [root]/var/log/{apache2,nginx,httpd}). Normal on hosts that are not web servers'+(PROFILE.logsOnly?"":"; also absent when the collection profile skipped /var/log subdirectories")+'.</td></tr></tbody>';
+    $("count").innerHTML="0 rows"; return; }
+  if(WEBCAP.total>WEBCAP.shown) $("count").innerHTML+=' · <span class="tag sus">capped: '+nf(WEBCAP.shown)+' of '+nf(WEBCAP.total)+' stored</span> narrow /from /to';
+}
+var UCOLS=[
+  {h:"Score / tags", sk:function(r){return r.score;}, cell:function(r){return scoreCell(r);}},
+  {h:"UID", sk:function(r){return r.uid;}, cell:function(r){return '<td class="mono" style="text-align:center">'+r.uid+'</td>';}},
+  {h:"User", sk:function(r){return lc(r.user);}, cell:function(r){return '<td class="mono">'+esc(r.user)+'</td>';}},
+  {h:"Shell", sk:function(r){return lc(r.shell);}, cell:function(r){return '<td class="mono'+(r.interactive?'':' muted')+'">'+esc(r.shell)+'</td>';}},
+  {h:"Groups", sk:function(r){return r.groups.length;}, cell:function(r){var g=r.groups.join(", ");return '<td class="mono muted" title="'+esc(g)+'">'+esc(trunc(g,34))+'</td>';}},
+  {h:"Password", sk:function(r){return r.locked===null?"":(r.locked?"locked":(r.hasPw?"set":"EMPTY"));}, cell:function(r){var v=r.locked===null?"-":(r.locked?"locked":(r.hasPw?"set":'<span class="err">EMPTY</span>'));return '<td class="mono" style="text-align:center">'+v+'</td>';}},
+  {h:"SSH keys", sk:function(r){return r.keys;}, cell:function(r){return '<td class="mono" style="text-align:center">'+(r.keys||"-")+'</td>';}},
+  {h:"History", sk:function(r){return r.hist;}, cell:function(r){return '<td class="mono" style="text-align:center">'+(r.hist?nf(r.hist):"-")+'</td>';}},
+  {h:"Last login", sk:function(r){return r.lastEp;}, cell:function(r){return '<td class="mono">'+(r.lastEp?(esc(fmtTime(r.lastEp,false))+(r.lastIp?(" "+esc(r.lastIp)):"")):"-")+'</td>';}}
+];
+function renderUsers(){
+  var rows=[], inter=0, svc=0;
+  for(var i=0;i<USERS.length;i++){ var r=USERS[i];
+    if(r.interactive) inter++; if(svcAccount(r.user)) svc++;
+    if(!passQ(r)) continue;
+    rows.push(r); }
+  sortRows(rows,UCOLS,SORT.users); drawTable(UCOLS,rows,SORT.users,"users");
+  if(!USERS.length){ profileEmptyMsg(0,"accounts (/etc/passwd not in this capture)"); return; }
+  $("count").innerHTML+=" · "+nf(inter)+" interactive-shell, "+nf(svc)+" service accounts"+(USERS.length && USERS[0].locked===null?" · shadow not collected (lock state unknown)":"");
+}
+var ACOLS=[
+  {h:"Score / tags", sk:function(r){return r.score;}, cell:function(r){return scoreCell(r);}},
+  {h:"When", sk:function(r){return r.epoch;}, cell:function(r){return '<td class="mono">'+esc(fmtTime(r.epoch,true))+'</td>';}},
+  {h:"Type", sk:function(r){return r.typ;}, cell:function(r){return '<td class="mono muted">'+esc(r.typ)+'</td>';}},
+  {h:"User", sk:function(r){return lc(r.user);}, cell:function(r){return '<td class="mono">'+esc(r.user||"-")+'</td>';}},
+  {h:"Source IP", sk:function(r){return lc(r.ip);}, cell:function(r){return '<td class="mono" title="'+esc(geoTip(r.ip))+'">'+esc(r.ip||"-")+geoTag(r.ip)+'</td>';}},
+  {h:"Detail", sk:function(r){return lc(r.detail);}, cell:function(r){return '<td class="mono" title="'+esc(r.detail)+'">'+esc(trunc(r.detail,110))+'</td>';}}
+];
+function renderAudit(){
+  var rows=[]; for(var i=0;i<AUDITX.length;i++){ var r=AUDITX[i];
+    if(!passQ(r)) continue;
+    if((DFROM||DTO) && r.epoch && !inDay(logonDay(r.epoch))) continue;
+    rows.push(r); }
+  sortRows(rows,ACOLS,SORT.audit); drawTable(ACOLS,rows,SORT.audit,"audit");
+  if(!AUDITX.length){
+    $("tbl").innerHTML='<thead><tr><th>auditd records</th></tr></thead><tbody><tr><td class="muted">No auditd logs in this capture ([root]/var/log/audit/audit.log). Only hosts running auditd produce these - when present this is the closest Linux gets to process-creation telemetry (execve + login records).</td></tr></tbody>';
+    $("count").innerHTML="0 rows"; return; }
+  if(AUDITCAP.total>AUDITCAP.shown) $("count").innerHTML+=' · <span class="tag sus">capped: '+nf(AUDITCAP.shown)+' of '+nf(AUDITCAP.total)+' stored</span>';
+}
+/* Logons by-source-IP aggregation - the brute-force triage view */
+function buildLogonByIp(){
+  var by={}, i, k;
+  for(i=0;i<LOGON.length;i++){ var r=LOGON[i]; var ip=trimStr(r.ip||""); if(!ip) continue;
+    var a=by[ip];
+    if(!a) a=by[ip]={kind:"logonip", ip:ip, first:0, last:0, fails:0, okc:0, users:{}, userN:0, score:0, tags:[], reasons:[], blob:""};
+    if(r.epoch){ if(!a.first||r.epoch<a.first) a.first=r.epoch; if(r.epoch>a.last) a.last=r.epoch; }
+    if(r.result==="failed") a.fails++;
+    else if(r.result==="accepted"||r.result==="session") a.okc++;
+    var un=trimStr(r.user); if(un && !a.users[un]){ a.users[un]=1; a.userN++; }
+    if(r.score>a.score){ a.score=r.score; a.tags=r.tags.slice(0); a.reasons=r.reasons.slice(0); }
+  }
+  var out=[];
+  for(k in by){ if(by.hasOwnProperty(k)){ var o=by[k];
+    o.userList=keysOf(o.users).join(", ");
+    o.blob=lc(o.ip+" "+o.userList+" "+geoTip(o.ip));
+    out.push(o); } }
+  return out;
+}
+var LIPCOLS=[
+  {h:"Score / tags", sk:function(r){return r.score;}, cell:function(r){return scoreCell(r);}},
+  {h:"Source IP", sk:function(r){return lc(r.ip);}, cell:function(r){return '<td class="mono">'+esc(r.ip)+geoTag(r.ip)+'</td>';}},
+  {h:"Geo / ASN", sk:function(r){return geoTip(r.ip);}, cell:function(r){return '<td class="mono muted" title="'+esc(geoTip(r.ip))+'">'+esc(trunc(geoTip(r.ip)||"-",36))+'</td>';}},
+  {h:"First seen", sk:function(r){return r.first;}, cell:function(r){return '<td class="mono">'+esc(r.first?fmtTime(r.first,false):"-")+'</td>';}},
+  {h:"Last seen", sk:function(r){return r.last;}, cell:function(r){return '<td class="mono">'+esc(r.last?fmtTime(r.last,false):"-")+'</td>';}},
+  {h:"Failures", sk:function(r){return r.fails;}, cell:function(r){return '<td class="mono" style="text-align:center">'+(r.fails?nf(r.fails):"-")+'</td>';}},
+  {h:"Successes", sk:function(r){return r.okc;}, cell:function(r){var hot=(r.fails>=5&&r.okc>0);return '<td class="mono" style="text-align:center">'+(hot?'<span class="err">':'')+(r.okc?nf(r.okc):"-")+(hot?'</span>':'')+'</td>';}},
+  {h:"Users tried", sk:function(r){return r.userN;}, cell:function(r){return '<td class="mono muted" title="'+esc(r.userList)+'">'+r.userN+(r.userList?(" ("+esc(trunc(r.userList,40))+")"):"")+'</td>';}}
+];
+function renderLateral(){
+  showEl("latWrap", LATERAL.length>0);
+  if(!LATERAL.length){ $("latTbl").innerHTML=""; return; }
+  var rows=LATERAL.slice(0);
+  rows.sort(function(a,b){ return (b.score-a.score) || ((b.corrob?1:0)-(a.corrob?1:0)); });
+  var h="<thead><tr><th>Evidence</th><th>User</th><th>Destination</th><th>Detail</th></tr></thead><tbody>";
+  for(var i=0;i<rows.length && i<200;i++){ var L=rows[i]; var rc=rowCls(L);
+    h+='<tr'+(rc?(' class="'+rc+'"'):'')+'><td class="mono'+(rc?' first':'')+'">'+esc(L.kind)
+      +(L.corrob?' <span class="tag sus" title="destination appears in known_hosts AND a typed ssh/scp command">CORROB</span>':'')+tagsHtml(L)+'</td>'
+      +'<td class="mono">'+esc(L.user||"-")+'</td>'
+      +'<td class="mono" title="'+esc(geoTip(L.dest))+'">'+esc(L.dest)+geoTag(L.dest)+'</td>'
+      +'<td class="mono muted" title="'+esc(L.evidence)+'">'+esc(trunc(L.evidence,70))+(L.epoch?(' · '+esc(fmtTime(L.epoch,false))):'')+'</td></tr>'; }
+  if(rows.length>200) h+='<tr><td colspan="4" class="muted">'+nf(rows.length-200)+' more row(s) - export or search to narrow.</td></tr>';
+  h+="</tbody>"; $("latTbl").innerHTML=h; setupColResizeFor($("latTbl"),"ov_lat"); freezeById("latTbl");
+}
+
 /* ---------- tab / render dispatch ---------- */
 function setTab(t, quiet){
   TAB=t;
-  var ids={overview:"tabOverview",proc:"tabProc",net:"tabNet",logon:"tabLogon",time:"tabTime",events:"tabEvents",logs:"tabLogs",ioc:"tabIoc",inv:"tabInv"};
+  var ids={overview:"tabOverview",proc:"tabProc",net:"tabNet",logon:"tabLogon",users:"tabUsers",time:"tabTime",events:"tabEvents",web:"tabWeb",audit:"tabAudit",logs:"tabLogs",ioc:"tabIoc",inv:"tabInv"};
   for(var k in ids){ if(ids.hasOwnProperty(k)){ $(ids[k]).className=(k===t)?"btn on":"btn"; } }
   var isOv=(t==="overview"), isLogs=(t==="logs"), isEv=(t==="events");
   showEl("ovCard",isOv); showEl("logsCard",isLogs); showEl("eventsCard",isEv); showEl("tblCard", !isOv && !isLogs && !isEv);
-  showEl("dateWrap", t==="time" || t==="logon");
-  showEl("tzWrap", t==="time" || t==="logon");
+  showEl("dateWrap", t==="time" || t==="logon" || t==="web" || t==="audit");
+  showEl("tzWrap", t==="time" || t==="logon" || t==="web" || t==="audit");
   showEl("procTreeWrap", t==="proc");
   showEl("logonFilters", t==="logon");
   if(!isOv && !isLogs && !isEv){ $("q").value=QUERY; }
@@ -3010,7 +3522,10 @@ function render(){
   if(TAB==="proc") renderProc();
   else if(TAB==="net") renderNet();
   else if(TAB==="logon") renderLogon();
+  else if(TAB==="users") renderUsers();
   else if(TAB==="time") renderTime();
+  else if(TAB==="web") renderWeb();
+  else if(TAB==="audit") renderAudit();
   else if(TAB==="ioc") renderIoc();
   else if(TAB==="inv") renderInventory();
 }
@@ -3050,6 +3565,11 @@ function renderOverview(){
   if(INTEGRITY.length) s+=statCard(nf(INTEGRITY.length),"integrity",intgHi?"flag":"warn");
   if(JOURNAL&&JOURNAL.flagged.length) s+=statCard(nf(JOURNAL.flagged.length),"journal rotation anomalies","flag");
   if(LASTLOGIN.length) s+=statCard(nf(LASTLOGIN.length),"acct last-login","");
+  if(USERS.length){ var uf=flaggedCount(USERS); s+=statCard(nf(USERS.length),"accounts",uf?"flag":""); }
+  if(WEBLOG.length){ var wf=flaggedCount(WEBLOG); s+=statCard(nf(WEBCAP.total),"web requests",wf?"flag":""); }
+  if(AUDITX.length){ var af=flaggedCount(AUDITX); s+=statCard(nf(AUDITCAP.total),"auditd records",af?"flag":""); }
+  if(LATERAL.length){ var ltf=0; for(var lt2=0;lt2<LATERAL.length;lt2++) if(LATERAL[lt2].corrob||LATERAL[lt2].score>=3) ltf++;
+    s+=statCard(nf(LATERAL.length),"lateral evidence",ltf?"flag":""); }
   if(EVENTS.length) s+=statCard(nf(EVENTS.length),"timeline events","");
   if(CONFIGDRIFT.length) s+=statCard(nf(CONFIGDRIFT.length),"config drift",CONFIGDRIFT.length?"warn":"");
   if(BROWSERDBS.length) s+='<span class="stat" data-jump="bdbWrap" style="cursor:pointer" title="Click to jump to the Browser databases section (SQLECmd hand-off)"><span class="n">'+nf(BROWSERDBS.length)+'</span><span class="l">browser DBs</span></span>';
@@ -3096,7 +3616,7 @@ function renderOverview(){
   if(!all.length) th='<div class="ok">No rows scored suspicious (score ≥ 3) in this capture.</div>';
   $("ovTop").innerHTML=th;
 
-  renderPersFind(); renderPackages(); renderContainers();
+  renderPersFind(); renderLateral(); renderPackages(); renderContainers();
   // persistence grid: click name to view contents; "open" opens the raw file's folder in Explorer
   var ph="<thead><tr><th>Artifact</th><th>Present</th><th>Size / files</th><th>Path (relative)</th><th>Raw file</th></tr></thead><tbody>";
   for(i=0;i<PERSIST.length;i++){ var it=PERSIST[i];
@@ -3430,7 +3950,7 @@ var NCOLS=[
   {h:"Proto", sk:function(r){return r.proto;}, cell:function(r){return '<td class="mono">'+esc(r.proto)+'</td>';}},
   {h:"State", sk:function(r){return r.state;}, cell:function(r){return '<td class="mono">'+esc(r.state)+'</td>';}},
   {h:"Local", sk:function(r){return lc(r.local);}, cell:function(r){return '<td class="mono" title="'+esc(r.local)+'">'+esc(r.local)+'</td>';}},
-  {h:"Remote", sk:function(r){return lc(r.peer);}, cell:function(r){return '<td class="mono" title="'+esc(r.peer)+'">'+esc(r.peer)+'</td>';}},
+  {h:"Remote", sk:function(r){return lc(r.peer);}, cell:function(r){return '<td class="mono" title="'+esc(r.peer)+(geoTip(r.peerAddr)?("  ·  "+esc(geoTip(r.peerAddr))):"")+'">'+esc(r.peer)+geoTag(r.peerAddr)+'</td>';}},
   {h:"Process", sk:function(r){return lc(r.procName);}, cell:function(r){return '<td class="mono muted">'+esc(r.procName?(r.procName+(r.procPid?(" ("+r.procPid+")"):"")):trimStr(r.procRaw))+'</td>';}}
 ];
 function renderNet(){ var rows=[]; for(var i=0;i<NET.length;i++) if(passQ(NET[i])) rows.push(NET[i]);
@@ -3458,7 +3978,7 @@ var LCOLS=[
   {h:"When", sk:function(r){return r.epoch;}, cell:function(r){return '<td class="mono">'+esc(logonWhenCell(r))+'</td>';}},
   {h:"Result", sk:function(r){return r.result;}, cell:function(r){return '<td class="mono">'+esc(r.result)+'</td>';}},
   {h:"User", sk:function(r){return lc(r.user);}, cell:function(r){return '<td class="mono">'+esc(r.user)+'</td>';}},
-  {h:"Source", sk:function(r){return lc(r.ip);}, cell:function(r){return '<td class="mono" title="'+esc(r.ip)+'">'+esc(r.ip||"(local)")+'</td>';}},
+  {h:"Source", sk:function(r){return lc(r.ip);}, cell:function(r){return '<td class="mono" title="'+esc(r.ip)+(geoTip(r.ip)?("  ·  "+esc(geoTip(r.ip))):"")+'">'+esc(r.ip||"(local)")+geoTag(r.ip)+'</td>';}},
   {h:"Method / cmd", sk:function(r){return r.method;}, cell:function(r){return '<td class="mono muted" title="'+esc(r.method+(r.cmd?("  "+r.cmd):""))+'">'+esc(trunc(logonMethodCell(r),70))+'</td>';}},
   {h:"Source", sk:function(r){return r.src;}, cell:function(r){return logonSrcCell(r);}}
 ];
@@ -3474,6 +3994,15 @@ function populateLogonFilters(){
 }
 function keysOf(o){ var a=[],k; for(k in o){ if(o.hasOwnProperty(k)&&k) a.push(k); } return a; }
 function renderLogon(){
+  // v0.11: aggregate-by-source-IP view (brute-force triage) - same table chrome, different columns
+  if(LOGON_BYIP){
+    var arows=[], agg=buildLogonByIp();
+    for(var a2=0;a2<agg.length;a2++){ if(passQ(agg[a2])) arows.push(agg[a2]); }
+    sortRows(arows,LIPCOLS,SORT.logonip); drawTable(LIPCOLS,arows,SORT.logonip,"logonip");
+    if(!agg.length){ $("tbl").innerHTML='<thead><tr><th>Logons by source IP</th></tr></thead><tbody><tr><td class="muted">No logon rows carry a source IP in this capture.</td></tr></tbody>'; $("count").innerHTML="0 rows"; }
+    else $("count").innerHTML+=" · aggregated from "+nf(LOGON.length)+" logon rows - click a row for detail, By source IP again for the flat view";
+    return;
+  }
   populateLogonFilters();
   var fu=$("logfUser").value, fs=$("logfSrc").value, fr=$("logfResult").value;
   var rows=[]; for(var i=0;i<LOGON.length;i++){ var r=LOGON[i];
@@ -3504,8 +4033,15 @@ var TCOLS=[
   {h:"UID", sk:function(r){return parseInt(r.uid,10)||0;}, cell:function(r){return '<td class="mono" style="text-align:center">'+esc(r.uid)+'</td>';}},
   {h:"Path", sk:function(r){return lc(r.path);}, cell:function(r){return '<td class="mono" title="'+esc(r.path)+'">'+esc(trunc(r.path,150))+'</td>';}}
 ];
-function renderTime(){ var rows=[]; for(var i=0;i<TIMEL.length;i++) if(passQ(TIMEL[i])) rows.push(TIMEL[i]);
-  sortRows(rows,TCOLS,SORT.time); drawTable(TCOLS,rows,SORT.time,"time"); profileEmptyMsg(TIMEL.length,"filesystem timeline (bodyfile)"); }
+function renderTime(){ var rows=[]; for(var i=0;i<TIMEL.length;i++){ var r=TIMEL[i];
+    if(!passQ(r)) continue;
+    // v0.11 pivot window: any timestamp inside ±15 min of the anchor keeps the row
+    if(PIVOT){ if(!((r.mtime>=PIVOT.from&&r.mtime<=PIVOT.to)||(r.ctime>=PIVOT.from&&r.ctime<=PIVOT.to)
+                  ||(r.crtime>=PIVOT.from&&r.crtime<=PIVOT.to)||(r.atime>=PIVOT.from&&r.atime<=PIVOT.to))) continue; }
+    rows.push(r); }
+  sortRows(rows,TCOLS,SORT.time); drawTable(TCOLS,rows,SORT.time,"time");
+  if(PIVOT && TIMEL.length) $("count").innerHTML+=' · <span class="tag sus">pivot ±15 min @ '+esc(fmtTime(PIVOT.center,true))+' '+esc(tzLabel())+'</span> <span class="lnk" onclick="clearPivot()">clear</span>';
+  profileEmptyMsg(TIMEL.length,"filesystem timeline (bodyfile)"); }
 
 /* inventory table (v0.3) - catalog map of key artifacts; click "open folder" to see the raw file */
 function renderInventory(){
@@ -3616,10 +4152,12 @@ function populateEvKind(){ var ks={}, i; for(i=0;i<EVENTS.length;i++) ks[EVENTS[
 function renderEvents(){
   populateEvKind();
   var minSc=parseInt($("evMinScore").value,10)||0, fkind=$("evKind").value;
+  var hideTool=false; try{ hideTool=$("evHideTool").checked; }catch(eht){}
   var rows=[], i;
   for(i=0;i<EVENTS.length;i++){ var e=EVENTS[i];
     if(e.score<minSc) continue;
     if(fkind && e.kind!==fkind) continue;
+    if(hideTool && hasTag(e,"TOOLING")) continue;   // v0.11: dual-use installs are context, hideable
     if(EVQ && e.blob.indexOf(EVQ)<0) continue;
     if(EVFROM||EVTO){ var d=eventDay(e.epoch); if(EVFROM && d<EVFROM) continue; if(EVTO && d>EVTO) continue; }
     rows.push(e);
@@ -3628,7 +4166,7 @@ function renderEvents(){
   var html='<thead><tr><th>When ('+esc(tzLabel())+')</th><th>Kind</th><th>Score</th><th>Event</th><th>Source</th></tr></thead><tbody>';
   if(!EVENTS.length) html+='<tr><td colspan="5" class="muted">No time-stamped events yet. Analyze a capture; on the Logs tab, "Load journal contents (WSL)" adds journal events.</td></tr>';
   for(i=0;i<shown;i++){ var r=rows[i]; var rc=r.score>=5?"row-flag":(r.score>=3?"row-warn":"");
-    html+='<tr'+(rc?(' class="'+rc+'"'):'')+'><td class="mono">'+esc(fmtTime(r.epoch,true))+'</td>'
+    html+='<tr'+(rc?(' class="'+rc+'"'):'')+'><td class="mono lnk" data-ep="'+r.epoch+'" title="Click: pivot the Timeline tab to ±15 min around this event">'+esc(fmtTime(r.epoch,true))+'</td>'
       +'<td class="mono muted">'+esc(r.kind)+'</td>'
       +'<td class="mono"><span class="sc '+scClass(r.score)+'">'+r.score+'</span></td>'
       +'<td class="mono" title="'+esc(r.label)+'">'+esc(trunc(r.label,110))+'</td>'
@@ -3740,6 +4278,17 @@ function openRowDetail(idx){
     h+=detField("ctime (UTC)", epochFull(r.ctime));
     h+=detField("crtime (UTC)", epochFull(r.crtime));
     h+='</div>';
+  } else if(TAB==="logon" && r.kind==="logonip"){
+    h+='<div style="font-size:14px;margin-bottom:6px"><b>'+esc(r.ip)+'</b> '+tagsHtml(r)+geoTag(r.ip)+'</div>';
+    h+=reasonsBlock(r);
+    h+='<div class="dl">';
+    h+=detField("Geo / ASN", geoTip(r.ip)||"(not resolved - online geo/ASN off, offline mode, or lookup pending)");
+    h+=detField("First seen ("+tzLabel()+")", r.first?fmtTime(r.first,true):"-");
+    h+=detField("Last seen ("+tzLabel()+")", r.last?fmtTime(r.last,true):"-");
+    h+=detField("Failures / successes", nf(r.fails)+" / "+nf(r.okc)+(r.fails>=5&&r.okc?"   (SUCCESS AFTER BRUTE-FORCE VOLUME)":""));
+    h+=detField("Users tried ("+r.userN+")", r.userList);
+    h+='</div>';
+    if(r.last) h+='<div class="dl"><span class="lnk" onclick="pivotTimeline('+r.last+')">Open Timeline ±15 min around the last event from this IP</span></div>';
   } else if(TAB==="logon"){
     h+='<div style="font-size:14px;margin-bottom:6px"><b>'+esc(r.result+" - "+r.user)+'</b> '+tagsHtml(r)+'</div>';
     h+=reasonsBlock(r);
@@ -3747,12 +4296,51 @@ function openRowDetail(idx){
     h+=detField("When ("+tzLabel()+")", logonWhenCell(r));
     h+=detField("Result", r.result);
     h+=detField("User", r.user);
-    h+=detField("Source", (r.ip||"(local)")+(r.ip&&!ipIsLocal(r.ip)?"  (public)":(r.ip?"  (local/RFC1918)":"")));
+    h+=detField("Source", (r.ip||"(local)")+(r.ip&&!ipIsLocal(r.ip)?"  (public)":(r.ip?"  (local/RFC1918)":""))+(geoTip(r.ip)?("  ·  "+geoTip(r.ip)):""));
     h+=detField("Method", r.method);
     if(r.cmd) h+=detField("Command", r.cmd);
     if(r.line) h+=detField(r.result==="last-login"?"Terminal":"tty / key", r.line);
     h+=detField("Source artifact", r.src);
     h+='</div>';
+    if(r.epoch) h+='<div class="dl"><span class="lnk" onclick="pivotTimeline('+r.epoch+')" title="What changed on disk around this logon?">Open Timeline ±15 min around this logon</span></div>';
+  } else if(TAB==="web"){
+    h+='<div style="font-size:14px;margin-bottom:6px"><b>'+esc(r.method+" "+trunc(r.uri,100))+'</b> '+tagsHtml(r)+'</div>';
+    h+=reasonsBlock(r);
+    h+='<div class="dl">';
+    h+=detField("When ("+tzLabel()+")", r.epoch?fmtTime(r.epoch,true):"-");
+    h+=detField("Client IP", r.ip+(geoTip(r.ip)?("  ·  "+geoTip(r.ip)):""));
+    h+=detField("Request", r.method+" "+r.uri);
+    h+=detField("Status / bytes", r.status+" / "+r.bytes);
+    if(r.ref && r.ref!=="-") h+=detField("Referer", r.ref);
+    h+=detField("User-Agent", r.ua);
+    h+=detField("Log file", r.src);
+    h+='</div>';
+    if(r.epoch) h+='<div class="dl"><span class="lnk" onclick="pivotTimeline('+r.epoch+')" title="What changed on disk around this request (web-shell plant)?">Open Timeline ±15 min around this request</span></div>';
+  } else if(TAB==="users"){
+    h+='<div style="font-size:14px;margin-bottom:6px"><b>'+esc(r.user)+' (uid '+r.uid+')</b> '+tagsHtml(r)+'</div>';
+    h+=reasonsBlock(r);
+    h+='<div class="dl">';
+    h+=detField("Shell", r.shell+(r.interactive?"":"  (non-interactive)"));
+    h+=detField("Home", r.home);
+    h+=detField("Groups", r.groups.join(", ")||"-");
+    h+=detField("Password", r.locked===null?"shadow not collected":(r.locked?"locked/disabled":(r.hasPw?"hash set":"EMPTY - passwordless login")));
+    h+=detField("authorized_keys entries", String(r.keys));
+    h+=detField("Shell-history lines", nf(r.hist));
+    h+=detField("Last login", r.lastEp?(fmtTime(r.lastEp,true)+" "+tzLabel()+(r.lastIp?(" from "+r.lastIp):"")):"(none recorded)");
+    h+='</div>';
+  } else if(TAB==="audit"){
+    h+='<div style="font-size:14px;margin-bottom:6px"><b>'+esc(r.typ+(r.user?(" - "+r.user):""))+'</b> '+tagsHtml(r)+'</div>';
+    h+=reasonsBlock(r);
+    h+='<div class="dl">';
+    h+=detField("When ("+tzLabel()+")", r.epoch?fmtTime(r.epoch,true):"-");
+    h+=detField("Type", r.typ);
+    h+=detField("User", r.user);
+    if(r.ip) h+=detField("Source IP", r.ip+(geoTip(r.ip)?("  ·  "+geoTip(r.ip)):""));
+    if(r.res) h+=detField("Result", r.res);
+    h+=detField("Detail", r.detail);
+    h+=detField("Audit event id", r.id);
+    h+='</div>';
+    if(r.epoch) h+='<div class="dl"><span class="lnk" onclick="pivotTimeline('+r.epoch+')">Open Timeline ±15 min around this record</span></div>';
   }
   $("detBody").innerHTML=h; $("detCopy").style.display=""; showEl("detailCard",true);
 }
@@ -3868,7 +4456,19 @@ function exportView(){
     return; }
   var rows=window.__fullRows||[]; if(!rows.length){ setStatus("Nothing to export","err"); return; }
   var lines, head;
-  if(TAB==="proc"){ head=["Score","Tags","User","PID","PPID","Start","Exe","SHA1","Command"]; lines=[head.join(",")];
+  if(TAB==="logon" && LOGON_BYIP){ head=["SourceIP","Geo","ASN","FirstSeen_"+tzLabel(),"LastSeen_"+tzLabel(),"Failures","Successes","UsersTried","UserList","Score","Tags"]; lines=[head.join(",")];
+    for(var bi=0;bi<rows.length;bi++){ var br=rows[bi]; var bg=GEO[br.ip]||{};
+      lines.push([cq(br.ip),cq(bg.country||""),cq(bg.asn||""),cq(br.first?fmtTime(br.first,true):""),cq(br.last?fmtTime(br.last,true):""),cq(br.fails),cq(br.okc),cq(br.userN),cq(br.userList),cq(br.score),cq(br.tags.join(";"))].join(",")); } }
+  else if(TAB==="web"){ head=["Score","Tags","When_"+tzLabel(),"ClientIP","Geo","ASN","Method","Status","Bytes","URI","Referer","UserAgent","Log"]; lines=[head.join(",")];
+    for(var wi=0;wi<rows.length;wi++){ var wr=rows[wi]; var wg=GEO[wr.ip]||{};
+      lines.push([cq(wr.score),cq(wr.tags.join(";")),cq(wr.epoch?fmtTime(wr.epoch,true):""),cq(wr.ip),cq(wg.country||""),cq(wg.asn||""),cq(wr.method),cq(wr.status),cq(wr.bytes),cq(wr.uri),cq(wr.ref),cq(wr.ua),cq(wr.src)].join(",")); } }
+  else if(TAB==="users"){ head=["Score","Tags","UID","User","Shell","Groups","Password","SSHKeys","HistoryLines","LastLogin_"+tzLabel(),"LastIP"]; lines=[head.join(",")];
+    for(var ui=0;ui<rows.length;ui++){ var ur=rows[ui];
+      lines.push([cq(ur.score),cq(ur.tags.join(";")),cq(ur.uid),cq(ur.user),cq(ur.shell),cq(ur.groups.join(";")),cq(ur.locked===null?"":(ur.locked?"locked":(ur.hasPw?"set":"EMPTY"))),cq(ur.keys),cq(ur.hist),cq(ur.lastEp?fmtTime(ur.lastEp,true):""),cq(ur.lastIp)].join(",")); } }
+  else if(TAB==="audit"){ head=["Score","Tags","When_"+tzLabel(),"Type","User","SourceIP","Result","Detail","AuditId"]; lines=[head.join(",")];
+    for(var xi=0;xi<rows.length;xi++){ var xr=rows[xi];
+      lines.push([cq(xr.score),cq(xr.tags.join(";")),cq(xr.epoch?fmtTime(xr.epoch,true):""),cq(xr.typ),cq(xr.user),cq(xr.ip),cq(xr.res),cq(xr.detail),cq(xr.id)].join(",")); } }
+  else if(TAB==="proc"){ head=["Score","Tags","User","PID","PPID","Start","Exe","SHA1","Command"]; lines=[head.join(",")];
     for(var i=0;i<rows.length;i++){ var r=rows[i]; lines.push([cq(r.score),cq(r.tags.join(";")),cq(r.user),cq(r.pid),cq(r.ppid),cq(r.start),cq(r.exe),cq(r.sha1),cq(r.cmd)].join(",")); } }
   else if(TAB==="net"){ head=["Score","Tags","Proto","State","Local","Remote","ProcName","ProcPid"]; lines=[head.join(",")];
     for(i=0;i<rows.length;i++){ r=rows[i]; lines.push([cq(r.score),cq(r.tags.join(";")),cq(r.proto),cq(r.state),cq(r.local),cq(r.peer),cq(r.procName),cq(r.procPid)].join(",")); } }
@@ -4127,6 +4727,18 @@ function init(){
   $("evKind").onchange=function(){ render(); };
   $("evTz").onclick=function(){ setTz(this.checked); };
   $("evExport").onclick=exportEvents;
+  $("evHideTool").onclick=function(){ render(); };
+  // v0.11: Logons by-source-IP aggregate view
+  $("logonByIpBtn").onclick=function(){ LOGON_BYIP=!LOGON_BYIP; this.className=LOGON_BYIP?"btn on":"btn"; render(); };
+  // v0.11: online geo/ASN enrichment - offline.txt overrules the checkbox entirely
+  if(offlineMode()){
+    $("onlineChk").checked=false; $("onlineChk").disabled=true;
+    $("onlineWrap").title="offline.txt is present next to the app - every outbound network feature is disabled, including geo/ASN lookups.";
+  }
+  $("onlineChk").onclick=function(){
+    if(this.checked){ if(LASTROOT){ maybeEnrichGeo(); } setStatus("Online geo/ASN lookups enabled - public IPs enrich after each Analyze (only the bare IP list is sent to ip-api.com).","muted"); }
+    else setStatus("Online geo/ASN lookups disabled - no outbound requests during analysis.","muted");
+  };
   // Processes: flat table <-> collapsible tree
   $("procTreeBtn").onclick=function(){ PROC_TREE=!PROC_TREE; this.className=PROC_TREE?"btn on":"btn"; this.innerHTML=PROC_TREE?"Table view":"Tree view"; render(); };
   // Logon filters
@@ -4169,13 +4781,14 @@ function init(){
     var pfa=attrUp(t,"data-pf"); if(pfa!=null && pfa!==""){ openPersistFile(parseInt(pfa,10)); return; }
     // process-tree (v0.7): fold toggle + open detail by pid
     var fold=attrUp(t,"data-fold"); if(fold){ PTREE_COLLAPSED[fold]=!PTREE_COLLAPSED[fold]; renderProcTree(); return; }
+    var pep=attrUp(t,"data-ep"); if(pep){ pivotTimeline(pep); return; }   // v0.11: Events When-cell pivot
     var tpid=attrUp(t,"data-pid"); if(tpid){ var pr=PROCBYPID[tpid]; if(pr){ window.__viewRows=[pr]; openRowDetail(0); } return; }
     var n=t; while(n && n.tagName!=="TR"){ n=n.parentNode; if(n&&n.tagName==="TABLE"){ n=null; break; } }
     if(!n||!n.getAttribute) return;
     var pf=n.getAttribute("data-pf");
     if(pf!=null && pf!==""){ openPersistFile(parseInt(pf,10)); return; }
     var di=n.getAttribute("data-i");
-    if(di!=null && di!=="" && (TAB==="proc"||TAB==="net"||TAB==="logon"||TAB==="time")){ var ix=parseInt(di,10); openRowDetail(ix);
+    if(di!=null && di!=="" && (TAB==="proc"||TAB==="net"||TAB==="logon"||TAB==="time"||TAB==="web"||TAB==="users"||TAB==="audit")){ var ix=parseInt(di,10); openRowDetail(ix);
       var trs=$("tbl").getElementsByTagName("tr");
       for(var z=0;z<trs.length;z++){ var zi=trs[z].getAttribute("data-i");
         if(zi!=null&&zi!==""){ var rows=window.__viewRows||[]; var zr=rows[parseInt(zi,10)]; var base=zr?rowCls(zr):"";
@@ -4240,6 +4853,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Inventory tab</b> - a map of every key artifact (processes, network, logons, accounts, persistence, system, filesystem, logs, containers) showing present/absent, size, and an <b>open folder</b> link that opens the raw file in Explorer. The Persistence &amp; config inventory on Overview has the same open-folder links; click an artifact name there to view its contents inline.</li>
       <li><b>UI (v0.7):</b> the Processes table has a <b>Name</b> column and a <b>Tree view</b> toggle (collapsible parent/child hierarchy - click ▸/▾ to fold, a row for detail). <b>Logons</b> has User / Source / Result filters and a clickable link to each raw source log. <b>Events</b> has a min-score filter and a kind filter. Long tables keep their <b>header row frozen</b> while scrolling, and <b>Persistence &amp; system findings</b> shows a date/time column.</li>
       <li><b>Resizable columns</b> everywhere - drag the right edge of any column header (it highlights on hover); double-click the edge to reset. Widths persist per view.</li>
+      <li><b>Triage-workflow release (v0.11):</b> three new tabs - <b>Web logs</b> (apache/nginx/httpd access logs parsed &amp; scored: POSTs to script URIs, traversal/encoded payloads, tool user-agents - the initial-access evidence the live web-shell check can't see), <b>Users</b> (per-account: shell, groups, shadow lock state, authorized_keys count, history size, last login), and <b>Audit</b> (auditd <code>execve</code> args - hex-decoded - plus login records: the closest Linux gets to process-creation telemetry). <b>Logons → By source IP</b> aggregates first/last seen, failures, successes and users tried per source. <b>Pivot ±15 min:</b> click an Events timestamp (or the link in any logon/web/audit detail pane) to jump to the filesystem Timeline windowed around that moment - the anchor-and-expand workflow. <b>Lateral movement panel</b> (Overview): known_hosts destinations + <code>~/.ssh/config</code> + typed ssh/scp/rsync commands, corroboration-tagged. <b>Online geo/ASN enrichment</b> (checkbox, default on; <code>offline.txt</code> overrules): public IPs across logons/network/web/audit get country + ASN chips via ip-api.com - only the bare IP list is sent, never case data. Persistence sweeps extended to <code>update-motd.d</code>, APT <code>Pre/Post-Invoke</code> hooks, <code>modprobe.d install</code> lines, XDG autostart, shell startup files, and <b>PAM module directories</b> (a non-<code>pam_*.so</code> shared object there is the 2025 Plague-backdoor pattern). <code>/etc/hosts</code> pins and known LKM-rootkit module names surface on the Logs tab, and Events gains a <b>hide TOOLING</b> toggle.</li>
       <li><b>Evidence-hygiene &amp; correctness release (v0.10):</b> host-local timestamps (classic syslog, <code>last -F</code>, boot tables, apt/dpkg logs) are normalized to UTC at ingest using the collector's offset, with Dec→Jan year-rollover handling - the host-TZ toggle is now exact for every source. Extracted-<b>folder</b> input is treated as read-only evidence: rotated <code>.gz</code> logs inflate into a per-run <code>gzcache</code> under the output directory instead of the source tree. WSL journal events reset between captures (no cross-case carry-over). A <b>hostname-mismatch gate</b> stops analysis when uac.log disagrees with the typed Target hostname. Dual-use package installs (nmap, tcpdump, …) are tagged <b>TOOLING</b> - context, no longer counted as IOC or auto-flagged. wtmp/btmp/lastlog binary decode is gated to Linux glibc x86-64 captures with per-record timestamp validation, and the host's own <code>last/lastb</code> text output is preferred when present. CSV exports neutralize formula-injection cells. Classic-syslog service inventory and hostname-consistency checks fixed (both silently failed or false-fired on <code>Jul 17 12:34:56</code>-style logs). IPv6 <code>/proc/net</code> sockets are decoded. <b>Offline mode:</b> an <code>offline.txt</code> next to the app disables every outbound network feature. <code>runinfo.json</code> gains run id, capture host, UAC version, profile and TZ offset, and <code>finishedUtc</code> is now really UTC.</li>
     </ul>
     <h3>Command line</h3>

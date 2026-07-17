@@ -311,7 +311,7 @@
         <span class="muted" id="count" style="margin-left:8px"></span>
       </div>
       <div class="scroll" id="tblScroll"><table id="tbl"></table></div>
-      <div class="muted" id="foot" style="font-size:11px;margin-top:6px">Times shown in UTC unless "host TZ" is ticked. Row tint = score (red ≥ 5, amber 3–4); red left-border = IOC hit. Click a row for detail. Case window (/from /to) filters the timeline only and never changes scores. Max <span id="maxrowLbl"></span> rows shown; export writes the full filtered set.</div>
+      <div class="muted" id="foot" style="font-size:11px;margin-top:6px">Times shown in UTC unless "host TZ" is ticked. Row tint = score (red ≥ 5, amber 3–4); red left-border = IOC hit. Click a row for detail. Case window (/from /to) filters the timeline only and never changes scores. Max <span id="maxrowLbl"></span> rows shown; export writes every parsed row matching the filters (note: the Timeline parse itself keeps at most 50,000 bodyfile rows - when that cap is hit the Overview says so; narrow /from /to to bring the rest into range).</div>
     </div>
 
     <div class="card hide" id="detailCard">
@@ -325,7 +325,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.9.4";
+var APP_VERSION = "0.10.0";
 /* v0.9.4 - SQLECmd wrapper: offer to DOWNLOAD instead of hunt for it (operator request):
    - if the wrapper isn't found anywhere, a hand-off now offers to download the latest
      SQLECmd-Wrapper.hta from GitHub into THIS app's folder (browse stays as the offline
@@ -489,6 +489,8 @@ var PROCBYPID = {};                   // pid -> PROC row (rebuilt each parse; fo
 var PROCKIDS = {};                    // ppid -> [pid,...]
 var EVENTS = [];                      // unified time-sorted scored timeline
 var JOURNALX = { loaded:false, events:[], note:"" };  // journalctl content (WSL, on demand)
+var SRC_EVIDENCE = false;             // v0.10: input was an operator-supplied extracted folder (treat as read-only evidence)
+var INFLCACHE = "";                   // v0.10: per-run dir holding gz-inflated rotated logs for evidence-folder input
 var WSL = "";                         // resolved wsl.exe or ""
 var CONFIGDRIFT = [];                 // sshd_config / pam.d findings (also pushed into PERSFIND)
 var TIMECAP = {shown:0, total:0};
@@ -600,16 +602,28 @@ function inflateLogs(root){
     var fso=new ActiveXObject("Scripting.FileSystemObject");
     var base=jp(root,"[root]/var/log");
     if(!fso.FolderExists(base)) return;
+    // v0.10 evidence hygiene: when the input is an operator-supplied extracted folder, NEVER write
+    // into it - inflate into a per-run cache under the output dir instead (listLogFiles merges the
+    // cache in). Our own extraction dir (archive input) is working copy, so in-place stays fine there.
+    var toCache = SRC_EVIDENCE && LASTOUTDIR;
+    var cache = toCache ? (LASTOUTDIR+"\\gzcache") : "";
+    if(toCache) INFLCACHE=cache;
     var tmp=fso.GetSpecialFolder(2)+"", ps1=tmp+"\\uacgz_"+uid()+".ps1";
-    var bq=String(base).replace(/'/g,"''");
+    var bq=String(base).replace(/'/g,"''"), cq2=String(cache).replace(/'/g,"''");
     var L=[
       "$ErrorActionPreference='SilentlyContinue'",
       "Add-Type -AssemblyName System.IO.Compression | Out-Null",
-      "$n=0",
-      "Get-ChildItem -LiteralPath '"+bq+"' -Recurse -File -Filter *.gz | ForEach-Object {",
-      "  $out=$_.FullName.Substring(0,$_.FullName.Length-3)",
-      "  if(-not (Test-Path -LiteralPath $out)){",
-      "    try{ $in=[IO.File]::OpenRead($_.FullName)",
+      "$base='"+bq+"'","$cache='"+cq2+"'","$n=0",
+      "Get-ChildItem -LiteralPath $base -Recurse -File -Filter *.gz | ForEach-Object {",
+      "  $sib=$_.FullName.Substring(0,$_.FullName.Length-3)",
+      "  if($cache){",
+      "    $out=Join-Path $cache ($sib.Substring($base.Length).TrimStart('\\'))",
+      "  } else { $out=$sib }",
+      // skip when the plain sibling already exists in the SOURCE (idempotent) or in the cache
+      "  if(-not (Test-Path -LiteralPath $sib) -and -not (Test-Path -LiteralPath $out)){",
+      "    try{ $od=Split-Path $out -Parent",
+      "      if(-not (Test-Path -LiteralPath $od)){ New-Item -ItemType Directory -Force $od | Out-Null }",
+      "      $in=[IO.File]::OpenRead($_.FullName)",
       "      $g=New-Object IO.Compression.GzipStream($in,[IO.Compression.CompressionMode]::Decompress)",
       "      $o=[IO.File]::Create($out); $g.CopyTo($o); $o.Close(); $g.Close(); $in.Close(); $n++ }catch{}",
       "  } }",
@@ -619,7 +633,7 @@ function inflateLogs(root){
     var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']);
     try{ fso.DeleteFile(ps1); }catch(e0){}
     var mm=(r.log+"").match(/INFLATED=(\d+)/);
-    if(mm && parseInt(mm[1],10)>0) appendLog("Inflated "+mm[1]+" rotated .gz log(s) under [root]/var/log so their history is parsed.");
+    if(mm && parseInt(mm[1],10)>0) appendLog("Inflated "+mm[1]+" rotated .gz log(s)"+(toCache?(" into the run cache "+cache+" (source evidence folder untouched)"):" under [root]/var/log")+" so their history is parsed.");
   }catch(e){ appendLog("gz inflation skipped: "+e.message); }
 }
 
@@ -627,9 +641,22 @@ function inflateLogs(root){
    .1 before .2 (i.e. newest-first is not guaranteed but epochs drive all ordering downstream) */
 function listLogFiles(root, rel, re){
   var out=[]; try{ var fso=new ActiveXObject("Scripting.FileSystemObject"); var dir=jp(root,rel);
-    if(!fso.FolderExists(dir)) return out;
-    var e=new Enumerator(fso.GetFolder(dir).Files);
-    for(;!e.atEnd();e.moveNext()){ var f=e.item(); if(re.test(f.Name+"")) out.push(f.Path+""); }
+    if(fso.FolderExists(dir)){
+      var e=new Enumerator(fso.GetFolder(dir).Files);
+      for(;!e.atEnd();e.moveNext()){ var f=e.item(); if(re.test(f.Name+"")) out.push(f.Path+""); }
+    }
+    // v0.10: evidence-folder input inflates rotated .gz logs into a run cache instead of the source
+    // tree - merge that mirror in (same relative layout under [root]/var/log; no name collisions,
+    // the inflator skips anything whose plain sibling exists in the source)
+    if(INFLCACHE){ var pref="[root]/var/log";
+      if(String(rel).indexOf(pref)===0){
+        var cdir=INFLCACHE+String(rel).substring(pref.length).replace(/\//g,"\\");
+        if(fso.FolderExists(cdir)){
+          var e2=new Enumerator(fso.GetFolder(cdir).Files);
+          for(;!e2.atEnd();e2.moveNext()){ var f2=e2.item(); if(re.test(f2.Name+"")) out.push(f2.Path+""); }
+        }
+      }
+    }
   }catch(er){} return out;
 }
 /* read every file matching re under a dir and concat their lines (rotated history included) */
@@ -644,6 +671,17 @@ function readLogSet(root, rel, re){
    into META.tzOffMin so epoch columns (timeline, logons) can optionally render in the collector's
    local clock instead of UTC. Default stays UTC. */
 function tzAdj(sec){ return (TZVIEW && META.tzOffMin) ? (sec + META.tzOffMin*60) : sec; }
+/* v0.10: host-LOCAL wall-clock sources (classic syslog, last -F, journalctl table output, apt/dpkg
+   logs) must be normalized to UTC at INGEST by subtracting the collector's offset - previously they
+   were stored as-is (mislabeled UTC) and the host-TZ toggle then shifted them a second time.
+   If uac.log carried no offset (tzOffMin 0/unknown) this is a no-op and those rows stay host-local -
+   same behaviour as before, now with consistent RFC3339 rows. DST transitions inside the log window
+   can be off by the DST delta (single header offset); acceptable for triage. */
+function hostLocalToUtc(sec){ return sec - (META.tzOffMin||0)*60; }
+/* collection start as a UTC epoch (from uac.log's first stamped line) - anchors year-rollover checks */
+function captureEpoch(){ var m=String(META.started||"").match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+  if(!m) return 0;
+  return Math.floor(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6])/1000)-(META.tzOffMin||0)*60; }
 function tzLabel(){ if(!TZVIEW || !META.tzOffMin) return "UTC";
   var s=META.tzOffMin, sign=s<0?"-":"+"; s=Math.abs(s); return "UTC"+sign+p2n(Math.floor(s/60))+p2n(s%60); }
 
@@ -715,6 +753,11 @@ function htaFolder(){
   try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); return parentDir(p); }catch(e2){}
   return "";
 }
+/* v0.10 offline forensic mode: drop a file named "offline.txt" next to this .hta and every
+   outbound network feature (GitHub self-update check, SQLECmd-wrapper freshness check + download,
+   field-guide fetch) is disabled for good. Delete the file to re-enable. Parsing itself never
+   touches the network either way. */
+function offlineMode(){ try{ var b=htaFolder(); return !!(b && fileExists(b+"\\offline.txt")); }catch(e){ return false; } }
 function isNetworkPath(p){
   try{ if(/^\\\\/.test(p)) return true;
     var fso=new ActiveXObject("Scripting.FileSystemObject");
@@ -743,6 +786,9 @@ function checkTar(){
 var APP_NAME="UAC";
 var HOST_TOUCHED=false, OUT_TOUCHED=false;
 function sanitHost(s){ return String(s).replace(/[^A-Za-z0-9._\-]/g,"-").replace(/^[\-.]+|[\-.]+$/g,""); }
+/* v0.10: same host? case-insensitive, and a bare shortname matches its FQDN (web01 == web01.acme.local) */
+function hostsEquivalent(a,b){ a=lc(trimStr(a)); b=lc(trimStr(b)); if(!a||!b) return true;
+  return a===b || a.split(".")[0]===b.split(".")[0]; }
 /* UAC archives are named uac-<hostname>-<os>-<timestamp>. Peel the leading uac- and the trailing
    -<os>-<digits> to recover the (possibly hyphenated) hostname. */
 function guessHost(p){
@@ -807,14 +853,22 @@ function writeRunInfo(outdir, input, freshFiles){
     var p=String(outdir).replace(/[\\\/]+$/,"")+"\\runinfo.json";
     var arr=[];
     try{ if(fileExists(p)){ var old=JSON.parse(readUtf8(p)); if(old && old.length!=null) arr=old; } }catch(e0){}
+    // v0.10: finishedUtc was previously LOCAL time labeled UTC (10h skew on a UTC+10 workstation)
     var d=new Date(); function p2(x){ return (x<10?"0":"")+x; }
-    var iso=d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate())+"T"+p2(d.getHours())+":"+p2(d.getMinutes())+":"+p2(d.getSeconds());
+    var iso=d.getUTCFullYear()+"-"+p2(d.getUTCMonth()+1)+"-"+p2(d.getUTCDate())+"T"+p2(d.getUTCHours())+":"+p2(d.getUTCMinutes())+":"+p2(d.getUTCSeconds())+"Z";
     var names=[]; for(var i=0;i<freshFiles.length && i<50;i++) names.push(freshFiles[i].name||String(freshFiles[i]));
     var ent={app:APP_NAME, appVersion:APP_VERSION, host:sanitHost($("hostName").value),
-              input:String(input||""), finishedUtc:iso, files:names};
+              input:String(input||""), finishedUtc:iso, files:names,
+              // v0.10 provenance: run id + what the capture itself said
+              runId:uid(), captureHost:(META.host||""), uacVersion:(META.uacVer||""),
+              profile:(CAPPROF?CAPPROF.key:""), hostTzOffMin:(META.tzOffMin||0),
+              timestampNote:"host-local sources (classic syslog, last -F, boots, apt/dpkg) normalized to UTC via hostTzOffMin at ingest"};
     if(CASE_FROM) ent.winFrom=CASE_FROM; if(CASE_TO) ent.winTo=CASE_TO;
     arr.push(ent);
-    writeUtf8(p, JSON.stringify(arr,null,2));
+    // stage-then-copy so a concurrent reader never sees a half-written runinfo.json
+    var tmp=p+".tmp"; writeUtf8(tmp, JSON.stringify(arr,null,2));
+    try{ var fso2=new ActiveXObject("Scripting.FileSystemObject"); fso2.CopyFile(tmp,p,true); fso2.DeleteFile(tmp); }
+    catch(ecp){ writeUtf8(p, JSON.stringify(arr,null,2)); }
     RUNINFO_LAST={path:p, iso:iso};
   }catch(e){}
 }
@@ -857,14 +911,20 @@ function buildRunSummary(){
 function nowStamp(){ var d=new Date(); function p(x){return (x<10?"0":"")+x;}
   return d.getFullYear()+""+p(d.getMonth()+1)+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
 function isArchive(p){ return /\.(tar\.gz|tgz|tar|zip)$/i.test(String(p)); }
-/* find the folder that holds uac.log: the dir itself or any immediate subfolder */
+/* find the folder that holds uac.log - breadth-first to 4 levels (v0.10; was: dir + one child
+   level only, which missed captures nested under e.g. case\evidence\extracted\uac-host-...\ ) */
 function findUacRoot(dir){
   try{
     var fso=new ActiveXObject("Scripting.FileSystemObject");
     if(!fso.FolderExists(dir)) return "";
-    if(fso.FileExists(dir+"\\uac.log")) return dir;
-    var e=new Enumerator(fso.GetFolder(dir).SubFolders);
-    for(; !e.atEnd(); e.moveNext()){ var sf=e.item(); if(fso.FileExists(sf.Path+"\\uac.log")) return sf.Path+""; }
+    var queue=[{p:String(dir), d:0}], seen=0;
+    while(queue.length){
+      var cur=queue.shift();
+      if(fso.FileExists(cur.p+"\\uac.log")) return cur.p;
+      if(cur.d>=4 || ++seen>5000) continue;
+      try{ var e=new Enumerator(fso.GetFolder(cur.p).SubFolders);
+        for(; !e.atEnd(); e.moveNext()) queue.push({p:e.item().Path+"", d:cur.d+1}); }catch(e2){}
+    }
   }catch(er){}
   return "";
 }
@@ -886,6 +946,7 @@ function analyze(){
     var root0=findUacRoot(inp);
     if(!root0){ setStatus("That folder does not contain uac.log (not an extracted UAC capture). Point at the folder holding uac.log, or at the archive.","err"); return; }
     setStatus("Parsing extracted capture…","muted");
+    SRC_EVIDENCE=true;   // operator-supplied folder = evidence; parsers must not write into it
     window.setTimeout(function(){ parseCapture(root0, inp); }, 40);
     return;
   }
@@ -935,6 +996,7 @@ function extractDone(log, exDir, input){
   var skip=(log.match(/Invalid argument/g)||[]).length;
   if(skip) appendLog("bsdtar skipped "+skip+" Unix symlink entry(ies) Windows can't create - expected, regular files are intact.");
   setStatus("Extracted OK"+(skip?(" ("+skip+" symlinks skipped)"):"")+" - parsing…","ok");
+  SRC_EVIDENCE=false;   // our own extraction dir is a working copy - in-place gz inflation is fine
   window.setTimeout(function(){ parseCapture(root, input); }, 40);
 }
 
@@ -944,12 +1006,31 @@ function parseCapture(root, input){
   try{
     LASTROOT=root;
     INTEGRITY=[]; LOGEVENTS=[];   // appended to by parseLogons / parseSyslogServices / parseJournal / parseSar
+    // v0.10: WSL-ingested journal content is capture-scoped - without this reset, host A's journal
+    // events would silently appear in host B's Events timeline (cross-case contamination).
+    JOURNALX={ loaded:false, events:[], note:"" };
+    INFLCACHE="";                 // v0.10: per-run gz-inflation cache path (set by inflateLogs)
     // v0.9.1: clear the header pills up front so a failed/partial re-Analyze can never leave the
     // PREVIOUS capture's host/profile showing next to an error (mislabeled-evidence guard).
     $("profpill").className="pill clk hide"; CAPPROF=null;
     $("srcpill").innerHTML="loading "+esc(baseName(root))+"…";
     setStatus("Parsing capture…","muted");
     parseMeta(root);
+    // v0.10 mislabeled-evidence gate: the typed hostname names the output folder AND the runinfo
+    // entry. If uac.log disagrees with it (e.g. a stale hostname left over from the previous case),
+    // stop before any results render under the wrong label.
+    var typedHost=trimStr($("hostName").value), capHost=sanitHost(META.host||"");
+    if(capHost && typedHost && !hostsEquivalent(capHost, typedHost)){
+      if(confirm("HOSTNAME MISMATCH\n\nThis capture's uac.log says the host is:\n    "+capHost+"\n\nbut the Target hostname box (which names the output folder and runinfo entry) says:\n    "+typedHost+"\n\nOK  = relabel this run as "+capHost+" (recommended)\nCancel = stop, so you can check you picked the right capture.")){
+        $("hostName").value=capHost; syncOutDir();
+        var od2=trimStr($("outDir").value); if(od2){ LASTOUTDIR=od2; ensureDir(od2); }
+        appendLog("Hostname mismatch resolved: relabeled run as "+capHost+" (was "+typedHost+"); output -> "+LASTOUTDIR);
+      } else {
+        setStatus("Stopped - hostname mismatch (capture says '"+capHost+"', you entered '"+typedHost+"'). Fix the Target hostname or pick the right capture, then Analyze again.","err");
+        $("srcpill").innerHTML="no capture loaded";
+        return;
+      }
+    }
     updateProfPill();             // v0.9: color-coded capture-profile pill in the header
     buildTreeList(root);          // v0.5.1: long-path-safe listing + >260-char audit (feeds parseJournal)
     inflateLogs(root);            // v0.4: decompress rotated .gz logs BEFORE any log parser reads them
@@ -1340,7 +1421,8 @@ function buildPersistence(root){
   PERSIST=[];
   var fso=new ActiveXObject("Scripting.FileSystemObject");
   for(var i=0;i<PERSIST_LIST.length;i++){
-    var it=PERSIST_LIST[i], present=false, size=0, count=0, ioc=false, viewPath="", relLabel=it.rel||("[root]/*/"+(it.user.length?it.user[0]:it.user));
+    var it=PERSIST_LIST[i], present=false, size=0, count=0, ioc=false, viewPath="",
+        relLabel=it.rel||("[root]/*/"+((typeof it.user==="string")?it.user:it.user[0]));  // v0.10: a string's [0] is its first CHAR, which rendered ".ssh/authorized_keys" as "."
     try{
       if(it.kind==="dir"){ var full=jp(root,it.rel); if(fso.FolderExists(full)){ present=true; count=countFiles(fso.GetFolder(full)); } }
       else if(it.kind==="userfile"){ var hits=findUserFiles(root, it.user); count=hits.length;
@@ -1516,8 +1598,14 @@ function monthNum(m){ var M={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep
   return M[String(m).substring(0,3).toLowerCase()]; }
 function captureYear(){ var m=String(META.started||"").match(/^(\d{4})/); return m?parseInt(m[1],10):(new Date()).getUTCFullYear(); }
 function logonEpoch(mon, day, hms){ var mo=monthNum(mon); if(mo==null) return 0;
-  var t=String(hms||"0:0:0").split(":"); var y=captureYear();
-  return Math.floor(Date.UTC(y, mo, parseInt(day,10)||1, parseInt(t[0],10)||0, parseInt(t[1],10)||0, parseInt(t[2],10)||0)/1000); }
+  var t=String(hms||"0:0:0").split(":");
+  var y=captureYear(), d=parseInt(day,10)||1, hh=parseInt(t[0],10)||0, mi=parseInt(t[1],10)||0, ss=parseInt(t[2],10)||0;
+  var ep=hostLocalToUtc(Math.floor(Date.UTC(y, mo, d, hh, mi, ss)/1000));
+  // classic syslog has no year: capture-year stamping puts December lines of a January capture in
+  // the FUTURE - roll those back one year (2-day slack for clock skew / in-flight collection)
+  var cap=captureEpoch();
+  if(cap && ep>cap+172800) ep=hostLocalToUtc(Math.floor(Date.UTC(y-1, mo, d, hh, mi, ss)/1000));
+  return ep; }
 function pushLogon(ep, when, result, user, ip, method, src){
   var r={ kind:"logon", epoch:ep||0, when:when||"", result:result||"", user:user||"", ip:ip||"",
           method:method||"", src:src||"", cmd:"", line:"", score:0, tags:[], reasons:[] };
@@ -1543,6 +1631,15 @@ function afterTs(line){
   var m=line.match(/^(?:\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+\-]\d{2}:?\d{2}|Z)?|\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s+(.*)$/);
   return m?m[1]:line;
 }
+/* v0.10 shared syslog-header host extractor - the OLD hostname-consistency check used a naive
+   token split that captured the DAY OF MONTH as the "hostname" on classic-format lines, firing a
+   false "entries from another host" integrity finding on any capture spanning 2+ days. */
+function syslogHost(line){
+  var m=line.match(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+\-]\d{2}:?\d{2}|Z)?\s+(\S+)\s/);
+  if(m) return m[1];
+  m=line.match(/^\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+(\S+)\s/);
+  return m?m[1]:"";
+}
 function parseLogons(root){
   LOGON=[]; LASTLOGIN=[]; CRON_SESSIONS=0;
   var i, m;
@@ -1567,32 +1664,56 @@ function parseLogons(root){
     m=rest.match(/\bsu(?:\[\d+\])?:\s+(?:\(to (\S+)\)\s+)?(\S+).*?(session opened|Successful su|FAILED su|authentication failure)/i);
     if(m){ var ok=!/FAIL|failure/i.test(m[3]); r=pushLogon(ep, "", ok?"su":"su-fail", m[1]||m[2], "", "su"+(m[1]?("->"+m[1]):""), "auth.log:su"); continue; }
   }
-  // wtmp (sessions/boots) + btmp (failed) binaries - decoded directly from the utmp struct.
-  // ir_triage captures carry BOTH the binaries and the last/lastb text derived from them, so the
-  // text files are parsed only when the matching binary produced nothing (dedup, not duplication).
-  var wtmpN=parseUtmpBinary(jp(root,"[root]/var/log/wtmp"), "wtmp");
-  var btmpN=parseUtmpBinary(jp(root,"[root]/var/log/btmp"), "btmp");
+  // v0.10: the TEXT last/lastb output (produced on the host by its own libc) is authoritative when
+  // present - the binary utmp decode assumes the glibc x86-64 layout and would emit garbage rows on
+  // AIX/Solaris/BSD/other-arch captures, and previously it also SUPPRESSED the accurate text parse
+  // when it "succeeded". Binary decode is now the fallback for logs-only captures, and is gated by
+  // a record-timestamp plausibility check (see parseUtmpBinary). Still deduped: one source per set.
+  var lf=parseLastFullFile(firstFile(root, ["live_response/system/last_-a_-F.txt","live_response/system/last_-a_-F_-f_var_log_wtmp.txt"]));
+  if(!lf) lf=parseLastFile(firstFile(root, ["live_response/system/last_-i.txt","live_response/system/last.txt"]), "session");
+  var lb=parseLastFile(firstFile(root, ["live_response/system/lastb_-i.txt","live_response/system/lastb.txt"]), "failed");
+  if(!lf) parseUtmpBinary(jp(root,"[root]/var/log/wtmp"), "wtmp");
+  if(!lb) parseUtmpBinary(jp(root,"[root]/var/log/btmp"), "btmp");
   parseLastlogBinary(root, jp(root,"[root]/var/log/lastlog"));
-  if(!btmpN) parseLastFile(firstFile(root, ["live_response/system/lastb_-i.txt","live_response/system/lastb.txt"]), "failed");
-  if(!wtmpN){
-    // prefer last -a -F: it prints the FULL year+seconds (no capture-year guessing) with host last
-    var lf=parseLastFullFile(firstFile(root, ["live_response/system/last_-a_-F.txt","live_response/system/last_-a_-F_-f_var_log_wtmp.txt"]));
-    if(!lf) parseLastFile(firstFile(root, ["live_response/system/last_-i.txt","live_response/system/last.txt"]), "session");
-  }
   scoreLogons();
 }
 /* utmp struct (glibc x86-64, 384 B/record): type@0(i16) line@8(32) user@44(32) host@76(256)
-   tv_sec@340(i32). Offsets field-verified against a real wtmp. */
+   tv_sec@340(i32). Offsets field-verified against a real wtmp.
+   v0.10: this layout is LINUX/glibc/x86-64-ONLY - UAC also collects from AIX / Solaris / *BSD /
+   macOS / ESXi whose utmp records differ, and decoding those with these offsets fabricates logon
+   events. Decode is now gated: (a) skipped outright when uac.log says non-Linux or non-x86-64,
+   (b) records are validated against a plausible timestamp window and the whole decode is DISCARDED
+   (with an integrity note) when >20% of records are implausible. */
 var UTMP_USER=7, UTMP_BOOT=2, UTMP_DEAD=8;
+function utmpLayoutSupported(){
+  if(META.os && !/linux/i.test(META.os)) return false;
+  if(META.arch && !/x86[_-]?64|amd64/i.test(META.arch)) return false;
+  return true;
+}
 function parseUtmpBinary(path, kind){
   var b=readBytes(path); if(!b) return 0;
-  var reclen=384, n=Math.floor(b.length/reclen), pushed=0;
-  if(b.length % reclen){ INTEGRITY.push({check:"utmp size", sev:3, detail:baseName(path)+" is "+b.length+" bytes - not a whole multiple of "+reclen+" (truncated / tampered utmp)"}); }
+  if(!utmpLayoutSupported()){
+    INTEGRITY.push({check:"utmp layout", sev:1, detail:baseName(path)+" binary decode skipped - capture reports '"+(META.os||"?")+" / "+(META.arch||"?")+"' and this decoder only knows the Linux glibc x86-64 utmp layout. Use the host's own last/lastb text output."});
+    return 0;
+  }
+  var reclen=384, n=Math.floor(b.length/reclen);
+  if(b.length % reclen){ INTEGRITY.push({check:"utmp size", sev:3, detail:baseName(path)+" is "+b.length+" bytes - not a whole multiple of "+reclen+" (truncated / tampered utmp, or a non-glibc layout)"}); }
+  var capEp=captureEpoch()||Math.floor(new Date().getTime()/1000);
+  var recs=[], bad=0, nonzero=0;
   for(var r=0;r<n;r++){ var o=r*reclen; var type=leI16(b,o); var sec=leU32(b,o+340); if(!sec) continue;
-    var user=cStr(b,o+44,32), line=cStr(b,o+8,32), host=cStr(b,o+76,256);
-    if(kind==="btmp"){ var rw=pushLogon(sec, "", "failed", user||"(unknown)", ipOf(host), "login", "btmp"); rw.line=line; pushed++; continue; }
-    if(type===UTMP_USER){ var rs=pushLogon(sec, "", "session", user, ipOf(host), "login", "wtmp"); rs.line=line; pushed++; }
-    else if(type===UTMP_BOOT){ LOGEVENTS.push({when:sec, kind:"boot", detail:"system boot (kernel "+(host||"?")+")", sev:0, src:"wtmp"}); }
+    nonzero++;
+    if(sec<946684800 || sec>capEp+172800){ bad++; continue; }   // pre-2000 or in the future = wrong layout
+    recs.push({type:type, sec:sec, user:cStr(b,o+44,32), line:cStr(b,o+8,32), host:cStr(b,o+76,256)});
+  }
+  if(nonzero && bad>nonzero*0.2){
+    INTEGRITY.push({check:"utmp layout", sev:2, detail:baseName(path)+": "+bad+" of "+nonzero+" records carry implausible timestamps for the glibc x86-64 layout - binary decode discarded (non-glibc utmp, corruption, or tampering). The host's last/lastb text output is the reliable source here."});
+    return 0;
+  }
+  var pushed=0;
+  for(var i2=0;i2<recs.length;i2++){ var rc=recs[i2];
+    if(kind==="btmp"){ var rw=pushLogon(rc.sec, "", "failed", rc.user||"(unknown)", ipOf(rc.host), "login", "btmp"); rw.line=rc.line; pushed++; continue; }
+    if(rc.type===UTMP_USER){ var rs=pushLogon(rc.sec, "", "session", rc.user, ipOf(rc.host), "login", "wtmp"); rs.line=rc.line; pushed++; }
+    else if(rc.type===UTMP_BOOT){ LOGEVENTS.push({when:rc.sec, kind:"boot", detail:"system boot (kernel "+(rc.host||"?")+")", sev:0, src:"wtmp"}); }
   }
   return pushed;
 }
@@ -1603,14 +1724,18 @@ function ipOf(h){ h=trimStr(h||""); return (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) ||
    strong finding - those accounts should never have an interactive login. */
 function parseLastlogBinary(root, path){
   var b=readBytes(path); if(!b) return;
+  if(!utmpLayoutSupported()) return;   // v0.10: same glibc x86-64 gate as wtmp/btmp (note already pushed there)
   var reclen=292, n=Math.floor(b.length/reclen);
   if(b.length % reclen){ INTEGRITY.push({check:"lastlog size", sev:2, detail:"lastlog is "+b.length+" bytes - not a whole multiple of "+reclen}); }
   var names=passwdNames(root);
+  var capEp=captureEpoch()||Math.floor(new Date().getTime()/1000), bad=0;
   for(var uid=0;uid<n;uid++){ var o=uid*reclen; var t=leU32(b,o+0); if(!t) continue;
+    if(t<946684800 || t>capEp+172800){ bad++; continue; }   // v0.10 plausibility gate per record
     var line=cStr(b,o+4,32), host=cStr(b,o+36,256), nm=names[uid]||("uid"+uid);
     LASTLOGIN.push({uid:uid, name:nm, epoch:t, line:line, ip:ipOf(host), host:host});
     var rw=pushLogon(t, "", "last-login", nm+" (uid "+uid+")", ipOf(host), "lastlog", "lastlog"); rw.line=line;
   }
+  if(bad) INTEGRITY.push({check:"lastlog layout", sev:1, detail:bad+" lastlog record(s) with implausible timestamps skipped (non-glibc layout or corruption)"});
   LASTLOGIN.sort(function(a,b2){ return b2.epoch-a.epoch; });
 }
 /* uid -> name map from [root]/etc/passwd when present (absent in pure logs captures) */
@@ -1621,7 +1746,7 @@ function passwdNames(root){
 }
 function fmtLogonWhen(ep, raw){ return ep?fmtTime(ep,true):(raw||""); }
 function parseLastFile(path, result){
-  if(!path) return; var lines=readLines(path);
+  if(!path) return 0; var lines=readLines(path), n=0;
   for(var i=0;i<lines.length;i++){ var ln=lines[i]; var t=trimStr(ln);
     if(t==="" || /^(wtmp|btmp) begins/i.test(t) || /^reboot\b/.test(t) || /^shutdown\b/.test(t)) continue;
     var toks=t.split(/\s+/); if(toks.length<4) continue;
@@ -1632,7 +1757,9 @@ function parseLastFile(path, result){
     var ep=0, when=t;
     if(dm){ ep=logonEpoch(dm[2], dm[3], dm[4]+":"+(dm[5]||"00")); when=fmtLogonWhen(ep, dm[0]); }
     pushLogon(ep, when, result, user, ip, result==="failed"?"login":"session", baseName(path));
+    n++;
   }
+  return n;
 }
 var LOGON_ALLOW_PORTS={};
 /* service/system accounts that must never have an interactive login/session - one that does is a
@@ -1723,8 +1850,13 @@ function deepParseCronText(src, text){
 }
 function deepParseSystemdUnit(src, text){
   var lines=String(text).split("\n");
-  for(var i=0;i<lines.length;i++){ var m=lines[i].match(/^\s*ExecStart(?:Pre|Post)?\s*=\s*[-@+!]*\s*(.+)$/i);
-    if(m) pushPersFind(src, "systemd ExecStart", m[1]); }
+  for(var i=0;i<lines.length;i++){
+    // v0.10: all Exec* directives (Stop/Reload/Condition run code too), and a .timer's Unit= target
+    var m=lines[i].match(/^\s*(ExecStart(?:Pre|Post)?|ExecStop(?:Post)?|ExecReload|ExecCondition)\s*=\s*[-@+!:]*\s*(.+)$/i);
+    if(m){ pushPersFind(src, "systemd "+m[1], m[2]); continue; }
+    if(/\.timer$/i.test(src)){ m=lines[i].match(/^\s*Unit\s*=\s*(.+)$/i);
+      if(m) pushPersFind(src, "systemd timer target", trimStr(m[1])); }
+  }
 }
 function deepParseAuthorizedKeys(src, text){
   var lines=String(text).split("\n");
@@ -1749,9 +1881,14 @@ function deepParsePersistence(root){
   for(i=0;i<spoolDirs.length;i++){ var sd=jp(root,spoolDirs[i]);
     if(fso.FolderExists(sd)){ try{ var se=new Enumerator(fso.GetFolder(sd).Files); for(;!se.atEnd();se.moveNext()){
       var sf=se.item(); t=readTextCapped(sf.Path+""); if(t) deepParseCronText("crontab("+sf.Name+")", t); } }catch(er2){} break; } }
-  // systemd units: /etc/systemd/system + /lib/systemd/system (scan .service files)
-  var unitDirs=["[root]/etc/systemd/system","[root]/lib/systemd/system","[root]/usr/lib/systemd/system"];
+  // systemd units: system + user unit dirs (v0.10: .timer/.socket/.path/.mount too, plus
+  // /etc|/usr/lib systemd/user and each user's ~/.config/systemd/user - user units are a
+  // persistence spot most triage misses)
+  var unitDirs=["[root]/etc/systemd/system","[root]/lib/systemd/system","[root]/usr/lib/systemd/system",
+                "[root]/etc/systemd/user","[root]/usr/lib/systemd/user","[root]/lib/systemd/user"];
   for(i=0;i<unitDirs.length;i++){ scanUnits(root, unitDirs[i]); }
+  var uhomes=userHomes(root);
+  for(i=0;i<uhomes.length;i++){ scanUnitsAbs(uhomes[i]+"\\.config\\systemd\\user", "~"+userLabel(uhomes[i]+"\\x")+"/.config/systemd/user"); }
   // rc.local
   t=readTextCapped(jp(root,"[root]/etc/rc.local"));
   if(t){ var rl=t.split("\n"); for(i=0;i<rl.length;i++){ var ln=trimStr(rl[i]);
@@ -1766,12 +1903,15 @@ function deepParsePersistence(root){
   for(i=0;i<hits.length;i++){ t=readTextCapped(hits[i]); if(t) deepParseAuthorizedKeys("authorized_keys ("+userLabel(hits[i])+")", t); }
 }
 function userLabel(p){ p=String(p).replace(/\\/g,"/"); var m=p.match(/\[root\]\/(?:home\/([^\/]+)|(root))\//i); return m?(m[1]||m[2]):baseName(parentDir(parentDir(p))); }
-function scanUnits(root, rel){
-  var fso=new ActiveXObject("Scripting.FileSystemObject"), dir=jp(root,rel);
+function scanUnits(root, rel){ scanUnitsAbs(jp(root,rel), rel.replace("[root]","")); }
+function scanUnitsAbs(dir, label){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
   if(!fso.FolderExists(dir)) return;
   try{ var e=new Enumerator(fso.GetFolder(dir).Files);
-    for(;!e.atEnd();e.moveNext()){ var f=e.item(); if(!/\.service$/i.test(f.Name+"")) continue;
-      var t=readTextCapped(f.Path+""); if(t) deepParseSystemdUnit(rel.replace("[root]","")+"/"+f.Name, t); }
+    for(;!e.atEnd();e.moveNext()){ var f=e.item();
+      // v0.10: .timer/.socket/.path/.mount are persistence vectors too (was .service only)
+      if(!/\.(service|timer|socket|path|mount)$/i.test(f.Name+"")) continue;
+      var t=readTextCapped(f.Path+""); if(t) deepParseSystemdUnit(label+"/"+f.Name, t); }
   }catch(er){}
   // one level of subfolders (…/multi-user.target.wants etc. are usually symlinks Windows dropped, so shallow is fine)
 }
@@ -1834,7 +1974,14 @@ function parsePackages(root){
   PKGS.sort(function(a,b){ return b.day-a.day; });
 }
 /* size-guarded UTF-8 read (blocks accidental multi-MB reads inline) */
-function readUtf8Safe(path){ try{ var sz=fileSize(path); if(sz>4194304) return readUtf8(path).substring(0,4194304); return readUtf8(path); }catch(e){ return ""; } }
+function readUtf8Safe(path){ try{ var sz=fileSize(path); if(sz<=4194304) return readUtf8(path);
+  // v0.10: truly capped READ - the old version read the whole file into memory and then
+  // substring'd it, defeating the point of the guard on multi-GB stray files
+  try{ var st=new ActiveXObject("ADODB.Stream"); st.Type=2; st.Charset="utf-8"; st.Open();
+    st.LoadFromFile(path); var t=st.ReadText(4194304); st.Close(); return t; }catch(e1){}
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var f=fso.OpenTextFile(path,1,false,0), out=f.Read(4194304); f.Close(); return out;
+}catch(e){ return ""; } }
 
 /* ---- Enhancement 4b: running containers ---- */
 function parseContainers(root){
@@ -1908,8 +2055,8 @@ function parseJournal(root){
             span: sys.length?{from:sys[0].usec, to:sys[sys.length-1].usec}:null };
   // journal gaps are also integrity findings
   for(i=0;i<flagged.length;i++){ var g=flagged[i];
-    INTEGRITY.push({check:"journal gap", sev:g.genChange?3:2,
-      detail:g.days.toFixed(1)+"-day gap in system journal coverage "+fmtUsec(g.from)+" -> "+fmtUsec(g.to)+(g.genChange?" with a journald generation change (possible journal vacuum/clear)":"")}); }
+    INTEGRITY.push({check:"journal rotation", sev:g.genChange?3:1,
+      detail:g.days.toFixed(1)+"-day interval between archived-journal rotation heads "+fmtUsec(g.from)+" -> "+fmtUsec(g.to)+(g.genChange?" WITH a journald generation change (possible journal vacuum/clear)":" - rotation-interval anomaly only (a quiet host or retention policy also produces this); confirm against actual event boundaries before calling it a coverage gap")}); }
 }
 function fmtUsec(us){ return fmtTime(Math.floor(us/1e6), false); }
 
@@ -1923,7 +2070,11 @@ function parseSyslogServices(root){
   var lines=readLogSet(root, "[root]/var/log", /^(syslog|messages)(\.\d+)?$/i);
   var freq={}, cron=0, started={}, i, m;
   for(i=0;i<lines.length;i++){ var ln=lines[i];
-    m=ln.match(/^\S+\s+\S+\s+([A-Za-z0-9_.\-\/]+?)(?:\[\d+\])?:\s/);
+    // v0.10: strip the timestamp with the shared parser (the old 2-token skip only worked for
+    // RFC3339 - classic "Jul 17 12:34:56" lines never matched, leaving the inventory empty),
+    // then take host + program from what's left.
+    var rest0=afterTs(ln);
+    m=(rest0===ln)?null:rest0.match(/^\S+\s+([A-Za-z0-9_.\-\/]+?)(?:\[\d+\])?:\s/);
     if(m){ var prog=m[1]; if(prog.indexOf("/")>=0) prog=prog.substring(prog.lastIndexOf("/")+1); freq[prog]=(freq[prog]||0)+1; }
     if(/CRON\[\d+\]/.test(ln)) cron++;
     var su=ln.match(/systemd\[1\]:\s+Started\s+(.+?)\.?\s*$/); if(su){ var u=trimStr(su[1]); started[u]=(started[u]||0)+1; }
@@ -2014,7 +2165,7 @@ function buildIntegrity(root){
   if(ooo>0) INTEGRITY.push({check:"time order", sev:2, detail:ooo+" auth.log line(s) jump backwards >1h from the running max timestamp (log injection / clock change?)"});
   // hostname consistency: a syslog line whose host field differs from uac.log's hostname
   if(META.host){ var sl=readLines(firstFile(root,["[root]/var/log/syslog"])), hosts={}, n=0;
-    for(i=0;i<sl.length && i<3000;i++){ var m=sl[i].match(/^\S+\s+(\S+)\s+\S+/); if(m){ hosts[m[1]]=1; } }
+    for(i=0;i<sl.length && i<3000;i++){ var hn=syslogHost(sl[i]); if(hn) hosts[hn]=1; }
     var list=[]; for(var hk in hosts){ if(hosts.hasOwnProperty(hk)){ list.push(hk); n++; } }
     if(n>1) INTEGRITY.push({check:"hostname", sev:2, detail:n+" distinct hostnames in syslog ("+list.join(", ")+") - entries from another host may have been merged/injected"}); }
   INTEGRITY.sort(function(a,b){ return (b.sev||0)-(a.sev||0); });
@@ -2172,6 +2323,22 @@ function parseProcDeep(root){
 var TCP_STATES={"01":"ESTAB","02":"SYN-SENT","03":"SYN-RECV","04":"FIN-WAIT-1","05":"FIN-WAIT-2","06":"TIME-WAIT","07":"CLOSE","08":"CLOSE-WAIT","09":"LAST-ACK","0A":"LISTEN","0B":"CLOSING"};
 function hex4Addr(h){ if(!h||h.length<8) return "";
   return parseInt(h.substring(6,8),16)+"."+parseInt(h.substring(4,6),16)+"."+parseInt(h.substring(2,4),16)+"."+parseInt(h.substring(0,2),16); }
+/* v0.10: /proc/net/tcp6|udp6 addresses - 32 hex chars = four 32-bit words, each printed
+   little-endian. Previously not decoded at all (rows showed "[v6]" and missed ss enrichment).
+   v4-mapped (::ffff:a.b.c.d) collapses to the plain IPv4 so it matches ss/ipIsLocal directly. */
+function hex6Addr(h){
+  if(!h||h.length<32) return "";
+  h=h.toLowerCase();
+  var g=[], i, allZero=true;
+  for(i=0;i<4;i++){ var w=h.substring(i*8,i*8+8);
+    g.push(w.substring(6,8)+w.substring(4,6));   // bytes 0-1 of this word
+    g.push(w.substring(2,4)+w.substring(0,2)); } // bytes 2-3
+  for(i=0;i<8;i++){ if(g[i]!=="0000") allZero=false; }
+  if(allZero) return "::";
+  if(g[0]==="0000"&&g[1]==="0000"&&g[2]==="0000"&&g[3]==="0000"&&g[4]==="0000"&&g[5]==="ffff")
+    return hex4Addr(h.substring(24,32));         // v4-mapped
+  return g.join(":");
+}
 function parseProcNet(root){
   var files=[["live_response/network/proc_net_tcp.txt","tcp",false],["live_response/network/proc_net_tcp6.txt","tcp",true],
              ["live_response/network/proc_net_udp.txt","udp",false],["live_response/network/proc_net_udp6.txt","udp",true]];
@@ -2190,7 +2357,7 @@ function parseProcNet(root){
       if(!m) continue;
       anyProc=true;
       var lport=parseInt(m[2],16), state=(proto==="udp")?"UNCONN":(TCP_STATES[m[5].toUpperCase()]||m[5]);
-      var laddr=v6?"":hex4Addr(m[1]);
+      var laddr=v6?hex6Addr(m[1]):hex4Addr(m[1]);
       var uid2=m[6], ino=m[7];
       var owner=UIDNAME[uid2]!=null?UIDNAME[uid2]:("uid "+uid2);
       var viaFd=SOCKINODE[ino];
@@ -2203,8 +2370,8 @@ function parseProcNet(root){
       }
       // hidden-socket check: LISTEN only (stable between snapshots)
       if(state==="LISTEN" && proto==="tcp" && !ssKey["tcp|LISTEN|"+lport]){
-        var hr={ kind:"network", proto:proto, state:"LISTEN", local:(v6?"[v6]":laddr)+":"+lport, peer:"-",
-                 localAddr:laddr||"(v6)", localPort:String(lport), peerAddr:"", peerPort:"",
+        var hr={ kind:"network", proto:proto, state:"LISTEN", local:(v6?("["+laddr+"]"):laddr)+":"+lport, peer:"-",
+                 localAddr:laddr, localPort:String(lport), peerAddr:"", peerPort:"",
                  procPid:(viaFd?viaFd.pid:""), procName:(viaFd?viaFd.name:("(owner: "+owner+")")), procRaw:"/proc/net"+(v6?"/tcp6":"/tcp"),
                  deep:[{s:3, tag:"HIDDEN-SOCK", reason:"LISTEN socket in /proc/net/tcp"+(v6?"6":"")+" (inode "+ino+", owner "+owner+") is MISSING from ss output - possible rootkit-hidden listener"}],
                  score:0, tags:[], reasons:[] };
@@ -2357,8 +2524,8 @@ function parseBoots(root){
   for(i=1;i<BOOTS.length;i++){ var gap=(BOOTS[i].firstEp-BOOTS[i-1].lastEp)/86400;
     if(gap>2) INTEGRITY.push({check:"boot gap", sev:1, detail:gap.toFixed(1)+"-day gap between boot "+BOOTS[i-1].idx+" ending "+BOOTS[i-1].last+" and boot "+BOOTS[i].idx+" starting "+BOOTS[i].first+" (host off, or journal missing for that window)"}); }
 }
-function isoEp(d,t){ var a=d.split("-"), b=t.split(":");
-  return Math.floor(Date.UTC(+a[0],+a[1]-1,+a[2],+b[0],+b[1],+b[2])/1000); }
+function isoEp(d,t){ var a=d.split("-"), b=t.split(":");   // journalctl tables print host-local time
+  return hostLocalToUtc(Math.floor(Date.UTC(+a[0],+a[1]-1,+a[2],+b[0],+b[1],+b[2])/1000)); }
 
 /* ---- last -a -F: full year+seconds (kills the capture-year guess); host is the LAST token ---- */
 function parseLastFullFile(path){
@@ -2368,7 +2535,7 @@ function parseLastFullFile(path){
     var m=t.match(/^(\S+)\s+(\S+)\s+.*?\w{3}\s+(\w{3})\s+(\d+)\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})/);
     if(!m) continue;
     var mo=monthNum(m[3]); if(mo==null) continue;
-    var ep=Math.floor(Date.UTC(+m[8],mo,+m[4],+m[5],+m[6],+m[7])/1000);
+    var ep=hostLocalToUtc(Math.floor(Date.UTC(+m[8],mo,+m[4],+m[5],+m[6],+m[7])/1000));  // last -F prints host-local
     var toks=t.split(/\s+/), host=toks[toks.length-1];
     var r=pushLogon(ep, "", "session", m[1], ipOf(host), "login", baseName(path)); r.line=m[2];
     n++;
@@ -2402,10 +2569,15 @@ function parseDockerDeep(root){
 /* ============ v0.6 - correlation & context ============ */
 
 /* ---- MITRE ATT&CK technique tagging ----
-   Maps the scoring tags this tool already emits to ATT&CK techniques. Attached to findings at
-   render time (derived from tags), summarized on the Overview. Not exhaustive - high-signal tags. */
+   Maps the scoring tags this tool already emits to CANDIDATE ATT&CK techniques. Attached to
+   findings at render time (derived from tags), summarized on the Overview. These are heuristic
+   mappings, not confirmed behaviour - the UI says "possible technique mappings" accordingly.
+   v0.10: mappings that OVERCLAIMED were removed: IOC hit is an indicator not a technique (was
+   T1588), an external connection is not evidence of C2 (was T1071), a single failed login is not
+   brute force (was T1110 - SPRAY/BRUTEWIN still map), a top-only transient PID is not process
+   injection (was T1055), an AppArmor/audit DENIAL is the defense WORKING (was T1562.x), and a
+   high listening port alone is not T1571. */
 var MITRE={
-  "IOC":["T1588","Obtain Capabilities / known-bad indicator"],
   "TMPEXEC":["T1036.005","Masquerading: temp/ram path execution"],
   "SHELLCMD":["T1059.004","Command & Scripting Interpreter: Unix Shell"],
   "PIPE-SH":["T1059.004","Interpreter: pipe-to-shell"],
@@ -2424,19 +2596,13 @@ var MITRE={
   "PRELOAD":["T1574.006","Hijack Execution Flow: ld.so.preload"],
   "NO-HIST":["T1562.003","Impair Defenses: disable shell history"],
   "ANTIFOR":["T1070","Indicator Removal (anti-forensics)"],
-  "TOP-ONLY":["T1055","Process Injection / transient process"],
   "HI-CPU":["T1496","Resource Hijacking (cryptomining)"],
   "SVC-INTERP":["T1059","Interpreter run by a service account"],
   "WEBSHELL":["T1505.003","Server Software Component: Web Shell"],
   "REPARENT":["T1055","Process reparenting / injection"],
-  "EXTERNAL":["T1071","Application Layer Protocol (external C2?)"],
-  "HIPORT":["T1571","Non-Standard Port"],
   "HIDDEN-SOCK":["T1205","Traffic Signaling / hidden listener"],
-  "SUSPROC":["T1071","Connection owned by a flagged process"],
-  "FAILED":["T1110","Brute Force (failed auth)"],
   "SPRAY":["T1110.003","Password Spraying"],
   "BRUTEWIN":["T1110","Brute Force succeeded"],
-  "EXTERNAL-LOGIN":["T1078","Valid Accounts (external)"],
   "ROOTEXT":["T1078","Valid Accounts: root from public IP"],
   "SVC-LOGIN":["T1078","Valid Accounts: service account login"],
   "NEW-LOGIN-ACCT":["T1136.001","Create Account: local"],
@@ -2455,9 +2621,7 @@ var MITRE={
   "SENS-MOUNT":["T1610","Deploy Container / sensitive mount"],
   "CTR-IMPLANT":["T1505","Server Software Component (container)"],
   "SSHD-CFG":["T1098.004","SSH config weakened"],
-  "PAM-CFG":["T1556.003","Modify Authentication Process: PAM"],
-  "APPARMOR":["T1562.001","Impair Defenses: MAC denial"],
-  "AUDIT":["T1562.006","Impair Defenses / audit event"]
+  "PAM-CFG":["T1556.003","Modify Authentication Process: PAM"]
 };
 /* distinct techniques for a set of tags: [{id,name}] */
 function techsForTags(tags){ var seen={}, out=[]; for(var i=0;i<tags.length;i++){ var m=MITRE[tags[i]];
@@ -2588,18 +2752,22 @@ function pushEvent(ep, kind, score, label, src, tags){
 function buildEvents(){
   EVENTS=[]; var i;
   for(i=0;i<LOGON.length;i++){ var l=LOGON[i]; if(l.epoch) pushEvent(l.epoch,"logon",l.score,l.result+" "+l.user+(l.ip?(" from "+l.ip):"")+(l.cmd?(" ["+trunc(l.cmd,50)+"]"):""),l.src,l.tags); }
-  for(i=0;i<PKGS.length;i++){ var p=PKGS[i]; var ep=pkgEpoch(p); if(ep) pushEvent(ep,"package",p.susp?4:0,p.action+" "+p.pkg+(p.by?(" by "+p.by):""),p.mgr,p.susp?["IOC"]:[]); }
+  // v0.10: watchlist tooling (nmap/tcpdump/socat...) is context, not an indicator - tag TOOLING at
+  // score 2 (visible, never auto-flagged) and never "IOC", which is reserved for operator-supplied terms.
+  for(i=0;i<PKGS.length;i++){ var p=PKGS[i]; var ep=pkgEpoch(p); if(ep) pushEvent(ep,"package",p.susp?2:0,p.action+" "+p.pkg+(p.by?(" by "+p.by):"")+(p.susp?(" ["+p.susp+" - dual-use tooling]"):""),p.mgr,p.susp?["TOOLING"]:[]); }
   for(i=0;i<BOOTS.length;i++){ var b=BOOTS[i]; if(b.firstEp) pushEvent(b.firstEp,"boot",0,"boot "+b.idx+" started (id "+b.id.substring(0,12)+")","journalctl",[]); }
+  // v0.10: archived-journal filename intervals are rotation heads, not proven coverage gaps - a
+  // quiet host rotates rarely. Only a generation change (vacuum/clear tell) keeps the ANTIFOR tag.
   if(JOURNAL){ for(i=0;i<JOURNAL.flagged.length;i++){ var g=JOURNAL.flagged[i];
-    pushEvent(Math.floor(g.to/1e6),"journal-gap",g.genChange?5:4,g.days.toFixed(1)+"-day journal gap ends"+(g.genChange?" (generation change)":""),"journal",["ANTIFOR"]); } }
+    pushEvent(Math.floor(g.to/1e6),"journal-gap",g.genChange?4:2,g.days.toFixed(1)+"-day journal rotation interval ends"+(g.genChange?" (generation change - possible vacuum/clear)":" (rotation-interval anomaly, not a proven coverage gap)"),"journal",g.genChange?["ANTIFOR"]:[]); } }
   for(i=0;i<LOGEVENTS.length;i++){ var e=LOGEVENTS[i]; if(e.when) pushEvent(e.when,e.kind,(e.sev||0)+ (e.sev>=2?1:0),e.detail,e.src,e.tags||[]); }
   for(i=0;i<JOURNALX.events.length;i++){ var jx=JOURNALX.events[i]; pushEvent(jx.epoch,jx.kind,jx.score,jx.label,"journal",jx.tags||[]); }
   for(i=0;i<PERSFIND.length;i++){ var pf=PERSFIND[i]; if(pf.epoch && pf.score>=2) pushEvent(pf.epoch,"history",pf.score,pf.src+": "+trunc(pf.cmd,60),"history",pf.tags); }
   EVENTS.sort(function(a,b){ return a.epoch-b.epoch; });
 }
-function pkgEpoch(p){ var m=String(p.when).match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
-  if(m) return Math.floor(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6])/1000);
-  var d=String(p.when).match(/(\d{4})-(\d{2})-(\d{2})/); return d?Math.floor(Date.UTC(+d[1],+d[2]-1,+d[3])/1000):0; }
+function pkgEpoch(p){ var m=String(p.when).match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);   // apt/dpkg logs are host-local
+  if(m) return hostLocalToUtc(Math.floor(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6])/1000));
+  var d=String(p.when).match(/(\d{4})-(\d{2})-(\d{2})/); return d?hostLocalToUtc(Math.floor(Date.UTC(+d[1],+d[2]-1,+d[3])/1000)):0; }
 
 /* ---- journalctl content via WSL (on demand) ---- */
 function resolveWsl(){ WSL=""; var cands=["C:\\Windows\\System32\\wsl.exe","C:\\Windows\\Sysnative\\wsl.exe","wsl.exe"];
@@ -2880,7 +3048,7 @@ function renderOverview(){
   s+=statCard(nf(IOCHITS.length),"IOC hits",IOCHITS.length?"flag":"");
   var intgHi=0; for(var ig=0;ig<INTEGRITY.length;ig++){ if(INTEGRITY[ig].sev>=2) intgHi++; }
   if(INTEGRITY.length) s+=statCard(nf(INTEGRITY.length),"integrity",intgHi?"flag":"warn");
-  if(JOURNAL&&JOURNAL.flagged.length) s+=statCard(nf(JOURNAL.flagged.length),"journal gaps","flag");
+  if(JOURNAL&&JOURNAL.flagged.length) s+=statCard(nf(JOURNAL.flagged.length),"journal rotation anomalies","flag");
   if(LASTLOGIN.length) s+=statCard(nf(LASTLOGIN.length),"acct last-login","");
   if(EVENTS.length) s+=statCard(nf(EVENTS.length),"timeline events","");
   if(CONFIGDRIFT.length) s+=statCard(nf(CONFIGDRIFT.length),"config drift",CONFIGDRIFT.length?"warn":"");
@@ -2894,7 +3062,7 @@ function renderOverview(){
   collectTech(PROC,3); collectTech(NET,3); collectTech(LOGON,3); collectTech(PERSFIND,2); collectTech(CONTAINERS,2);
   if(techList.length){ techList.sort(function(a,b){ return a.id<b.id?-1:1; });
     var th2=[]; for(var q2=0;q2<techList.length;q2++) th2.push('<span class="tag sus" title="'+esc(techList[q2].name)+'">'+esc(techList[q2].id)+'</span>');
-    $("ovStats").innerHTML+='<div style="font-size:11px;margin-top:8px"><span class="muted">ATT&CK techniques observed ('+techList.length+'): </span>'+th2.join(" ")+'</div>'; }
+    $("ovStats").innerHTML+='<div style="font-size:11px;margin-top:8px"><span class="muted" title="Heuristic mappings derived from scoring tags - candidates to investigate, NOT confirmed adversary behaviour">Possible ATT&CK technique mappings ('+techList.length+', heuristic): </span>'+th2.join(" ")+'</div>'; }
   if(PROFILE.logsOnly){
     $("ovStats").innerHTML+='<div class="muted" style="font-size:11px;margin-top:6px">'+esc(PROFILE.note)+'</div>';
   }
@@ -2920,7 +3088,8 @@ function renderOverview(){
   for(i=0;i<PERSFIND.length;i++) if(PERSFIND[i].score>=3) all.push({s:PERSFIND[i].score,k:"persist",lab:PERSFIND[i].src+": "+trunc(PERSFIND[i].cmd,55)});
   for(i=0;i<TIMEL.length;i++) if(TIMEL[i].score>=3) all.push({s:TIMEL[i].score,k:"time",lab:trunc(TIMEL[i].path,70)});
   for(i=0;i<INTEGRITY.length;i++) if(INTEGRITY[i].sev>=2) all.push({s:INTEGRITY[i].sev+2,k:"integrity",lab:INTEGRITY[i].check+": "+trunc(INTEGRITY[i].detail,60)});
-  for(i=0;i<PKGS.length;i++) if(PKGS[i].susp) all.push({s:4,k:"package",lab:PKGS[i].action+" "+PKGS[i].pkg+" ("+PKGS[i].susp+" - offensive tooling)"});
+  // v0.10: dual-use tooling installs are surfaced in Recent package activity (SUS chip), not in the
+  // "suspicious" top list - installing tcpdump/nmap is context, not an indicator on its own.
   all.sort(function(a,b){ return b.s-a.s; });
   var th="";
   for(i=0;i<all.length && i<16;i++){ th+='<div><span class="sc '+scClass(all[i].s)+'">'+all[i].s+'</span> <span class="muted">['+all[i].k+']</span> '+esc(all[i].lab)+'</div>'; }
@@ -2984,6 +3153,7 @@ function sqleWrapperVersion(path){
 /* quiet, once-per-session GitHub check for the latest wrapper release (mirrors this app's own
    checkSelfUpdate) - only used to DECIDE whether to offer an update; the download re-resolves live */
 function checkSqleLatest(){
+  if(offlineMode()) return;   // v0.10 offline mode: no outbound requests
   if(SQLE_CHECK_STARTED) return; SQLE_CHECK_STARTED=true;
   try{
     var x=new ActiveXObject("MSXML2.XMLHTTP.6.0");
@@ -3067,6 +3237,8 @@ function sendToSqlecmd(i){
    hand-off. The PS script resolves the latest release + its .hta asset live (so this works even if
    the async freshness check hasn't run), over TLS 1.2, mirroring doSelfUpdate/openInstructions. */
 function downloadSqleWrapper(i){
+  if(offlineMode()){ setStatus("Offline mode (offline.txt) - wrapper download disabled. Browse to an existing SQLECmd-Wrapper.hta instead.","err");
+    BDB_PENDING=i; try{ $("sqlePick").click(); }catch(e){} return; }
   var dest=htaFolder();
   if(!dest){ setStatus("Can't determine this app's folder to download into - browse to the wrapper instead.","err");
     BDB_PENDING=i; try{ $("sqlePick").click(); }catch(e){} return; }
@@ -3680,7 +3852,12 @@ function freezeById(id){ var tb=$(id); if(!tb) return; var n=tb.parentNode;
   while(n && n.className!==undefined){ if(/\bscroll\b/.test(n.className+"")){ bindFreeze(n, tb); return; } n=n.parentNode; } }
 
 /* ---------- export / copy ---------- */
-function cq(v){ v=(v==null)?"":String(v); return /[",\r\n]/.test(v)?('"'+v.replace(/"/g,'""')+'"'):v; }
+function cq(v){ v=(v==null)?"":String(v);
+  // v0.10 CSV formula-injection guard: captured strings are attacker-controlled; a leading = + - @
+  // executes as a formula when the export opens in Excel. Excel's own text-literal prefix (') is
+  // prepended unless the cell is a plain number or a unix mode string (data fidelity for those).
+  if(/^[=+\-@]/.test(v) && !/^-?\d+(\.\d+)?$/.test(v) && !/^[-dlcbsp][-rwxsStT]{9}/.test(v)) v="'"+v;
+  return /[",\r\n]/.test(v)?('"'+v.replace(/"/g,'""')+'"'):v; }
 function fmtSize(n){ if(!n) return "0 B"; var u=["B","KB","MB","GB"], i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+" "+u[i]; }
 function exportView(){
   if(TAB==="inv"){ var il=["Category,Artifact,Description,Present,SizeBytes,Files,Path"];
@@ -3704,7 +3881,9 @@ function exportView(){
   else { setStatus("Nothing to export on this tab","err"); return; }
   var dir=LASTOUTDIR||$("outDir").value;
   var path=dir+"\\"+TAB+"_export_"+nowStamp()+".csv";
-  try{ writeUtf8(path, lines.join("\r\n")); setStatus("Exported "+nf(lines.length-1)+" rows → "+path,"ok"); appendLog("Exported: "+path); }
+  // v0.10: say so when a timeline export is incomplete because the bodyfile parse cap was hit
+  var capNote=(TAB==="time" && TIMECAP.total>TIMECAP.shown)?(" (INCOMPLETE: bodyfile cap - "+nf(TIMECAP.shown)+" of "+nf(TIMECAP.total)+" rows parsed; narrow /from /to)"):"";
+  try{ writeUtf8(path, lines.join("\r\n")); setStatus("Exported "+nf(lines.length-1)+" rows → "+path+capNote, capNote?"err":"ok"); appendLog("Exported: "+path+capNote); }
   catch(e){ setStatus("Export failed: "+e.message,"err"); }
 }
 /* Logs-tab export: integrity findings + syslog service inventory + notable events in one CSV */
@@ -3818,6 +3997,7 @@ function selfVerNewer(r,l){ var a=String(r).split("."),b=String(l).split("."),n=
 function selfPath(){ try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\");
   if(/\.hta$/i.test(p) && fileExists(p)) return p; }catch(e){} return (htaFolder()||"")+"\\"+SELF_HTA; }
 function checkSelfUpdate(){
+  if(offlineMode()) return;   // v0.10: offline.txt next to the app disables all outbound requests
   try{
     var x=new ActiveXObject("MSXML2.XMLHTTP.6.0");
     x.open("GET","https://api.github.com/repos/"+SELF_REPO+"/releases/latest",true);
@@ -3837,6 +4017,7 @@ function checkSelfUpdate(){
   }catch(e){}
 }
 function doSelfUpdate(){
+  if(offlineMode()){ setStatus("Offline mode (offline.txt is present next to the app) - self-update disabled.","muted"); return; }
   if(!SELF_ASSET_URL){ setStatus("No update available (or offline).","muted"); return; }
   var target=selfPath(); if(!target || !/\.hta$/i.test(target)){ setStatus("Can't locate this app's own file to update in place.","err"); return; }
   if(!confirm("Download "+SELF_HTA+" v"+SELF_LATEST+" and replace this file?\n\n"+target+"\n\nThe app will close automatically once the new version is in place - just reopen it to run v"+SELF_LATEST+".")) return;
@@ -3871,7 +4052,12 @@ function closeHelp(){ showEl("helpModal",false); }
 var MANUAL_URL="https://raw.githubusercontent.com/bpmorris22/UAC-Triage-Tool/main/UAC-Triage-Manual.html";
 var MANUAL_FILE="UAC-Triage-Manual.html";
 function openManualFile(path){ try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+path+'"',1,false); return true; } catch(e){ setStatus("Downloaded the field guide, but could not open it: "+e.message,"err"); return false; } }
-function openInstructions(){ var fso=new ActiveXObject("Scripting.FileSystemObject"); var dest=fso.GetSpecialFolder(2)+"\\"+MANUAL_FILE; setStatus("Downloading the field guide from GitHub...","muted"); var ps1=fso.GetSpecialFolder(2)+"\\man_"+uid()+".ps1"; var dq=String(dest).replace(/'/g,"''"); var L=[]; L.push("$ErrorActionPreference='Stop'"); L.push("[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12"); L.push("Invoke-WebRequest -UseBasicParsing -Uri '"+MANUAL_URL+"' -OutFile '"+dq+"' -Headers @{ 'User-Agent'='UAC-Triage-Tool' }"); L.push("if((Get-Item '"+dq+"').Length -lt 2000){ throw 'downloaded file too small' }"); L.push("Write-Output 'MAN_OK'"); try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); } catch(ew){ setStatus("Could not stage the field-guide download: "+ew.message,"err"); return; } var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']); try{ fso.DeleteFile(ps1); }catch(e0){} if((r.log+"").indexOf("MAN_OK")>=0 && fileExists(dest)){ if(openManualFile(dest)) setStatus("Field guide downloaded and opened in your browser.","ok"); appendLog("Field guide: downloaded latest -> "+dest); } else { appendLog("--- field-guide download ---\n"+r.log); if(fileExists(dest)){ if(openManualFile(dest)) setStatus("Download failed (offline?) - opened the previously downloaded copy.","muted"); } else { setStatus("Field-guide download failed (offline, or the file moved). See log; or open it from the GitHub repo.","err"); } } }
+function openInstructions(){ var fso=new ActiveXObject("Scripting.FileSystemObject"); var dest=fso.GetSpecialFolder(2)+"\\"+MANUAL_FILE;
+  if(offlineMode()){ if(fileExists(dest)){ if(openManualFile(dest)) setStatus("Offline mode - opened the previously downloaded field guide.","muted"); }
+    else { var loc=htaFolder()?(htaFolder()+"\\"+MANUAL_FILE):""; if(loc && fileExists(loc)){ if(openManualFile(loc)) setStatus("Offline mode - opened the local field guide.","muted"); }
+      else setStatus("Offline mode (offline.txt) - field-guide download disabled and no local copy found. Open UAC-Triage-Manual.html from the repo folder.","err"); }
+    return; }
+  setStatus("Downloading the field guide from GitHub...","muted"); var ps1=fso.GetSpecialFolder(2)+"\\man_"+uid()+".ps1"; var dq=String(dest).replace(/'/g,"''"); var L=[]; L.push("$ErrorActionPreference='Stop'"); L.push("[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12"); L.push("Invoke-WebRequest -UseBasicParsing -Uri '"+MANUAL_URL+"' -OutFile '"+dq+"' -Headers @{ 'User-Agent'='UAC-Triage-Tool' }"); L.push("if((Get-Item '"+dq+"').Length -lt 2000){ throw 'downloaded file too small' }"); L.push("Write-Output 'MAN_OK'"); try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); } catch(ew){ setStatus("Could not stage the field-guide download: "+ew.message,"err"); return; } var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']); try{ fso.DeleteFile(ps1); }catch(e0){} if((r.log+"").indexOf("MAN_OK")>=0 && fileExists(dest)){ if(openManualFile(dest)) setStatus("Field guide downloaded and opened in your browser.","ok"); appendLog("Field guide: downloaded latest -> "+dest); } else { appendLog("--- field-guide download ---\n"+r.log); if(fileExists(dest)){ if(openManualFile(dest)) setStatus("Download failed (offline?) - opened the previously downloaded copy.","muted"); } else { setStatus("Field-guide download failed (offline, or the file moved). See log; or open it from the GitHub repo.","err"); } } }
 function openDir(){ var d=$("outDir").value; if(!d){ setStatus("No output directory set","err"); return; }
   try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+d+'"',1,false); }catch(e){ setStatus("Could not open folder: "+e.message,"err"); } }
 /* open the containing folder in Explorer with the file pre-selected (or just the folder for a dir) */
@@ -4042,18 +4228,19 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
     <h3>Also parsed</h3>
     <ul>
       <li><b>Rotated <code>.gz</code> logs</b> under <code>[root]/var/log</code> are inflated at parse time, so weeks of rotated auth/syslog/dpkg history are included automatically (a logs-only capture's real activity is usually in the rotated files).</li>
-      <li><b>Logs tab</b> (v0.4): <b>systemd journal coverage</b> decoded from journal filenames with <b>gap + generation-change detection</b> (journal vacuum/clear is an anti-forensics tell); <b>log-integrity</b> checks (utmp record alignment, broken rotation chains, out-of-order timestamps, empty logs, hostname consistency); a <b>syslog service inventory</b> (a poor-man's process list when live_response wasn't collected); <b>notable events</b> (cron executions, new systemd units, OOM kills, promiscuous mode, USB/module loads); a <b>sysstat/sar</b> CPU summary (sustained high %usr = miner tell); and a <b>cloud-init provisioning baseline</b> (first boot, datasource, original IP/MAC, user-data scripts, injected SSH keys).</li>
+      <li><b>Logs tab</b> (v0.4): <b>systemd journal rotation analysis</b> decoded from archived-journal filenames - unusually long rotation intervals are surfaced as <em>rotation-interval anomalies</em> (v0.10 wording: a quiet host or retention policy also produces them, so they are not called coverage gaps), and a <b>generation change</b> is flagged harder (journal vacuum/clear is an anti-forensics tell); <b>log-integrity</b> checks (utmp record alignment, broken rotation chains, out-of-order timestamps, empty logs, hostname consistency); a <b>syslog service inventory</b> (a poor-man's process list when live_response wasn't collected); <b>notable events</b> (cron executions, new systemd units, OOM kills, promiscuous mode, USB/module loads); a <b>sysstat/sar</b> CPU summary (sustained high %usr = miner tell); and a <b>cloud-init provisioning baseline</b> (first boot, datasource, original IP/MAC, user-data scripts, injected SSH keys).</li>
       <li><b>Overview</b> shows run metadata incl. the host <b>boot time</b> and <b>uptime / load</b>, plus <b>Recent package activity</b> - now from <code>apt/history.log</code> with <b>attribution</b> (Requested-By / commandline) and a <b>suspicious-tooling watchlist</b> (nmap, socat, masscan, xmrig, ...), separating human <code>apt install</code> from unattended-upgrade noise - and <b>Containers</b>, now deep-inspected: <b>privileged</b> (+3), host pid/network namespace (+2), <b>sensitive host mounts</b> incl. docker.sock (+2/+3), 0.0.0.0 port binds (+1), and files added inside a container at persistence paths via <code>docker diff</code> (+2).</li>
       <li><b>Logs tab additions</b> (v0.5): a <b>Boots table</b> from <code>journalctl --list-boots</code> (with between-boot gap checks), kernel-taint flag, and systemd enabled-unit/timer counts.</li>
       <li><b>Collection-profile awareness</b>: empty tabs explain themselves from uac.log's command line, and permission-denied coverage caveats (non-root collection) are surfaced. A <b>host-TZ / UTC</b> time toggle (Logons, Timeline, Events, Logs) uses the collector's offset from uac.log.</li>
       <li><b>Events tab (v0.6):</b> a single time-sorted, scored, case-window-filterable timeline unifying logons, package activity, boots, journal gaps &amp; content, audit/AppArmor denials and timestamped shell history - the "what happened around &lt;time&gt;" view. Exports to CSV.</li>
       <li><b>Process tree (v0.6):</b> the Processes detail pane shows each process's <b>ancestry and children</b>, %CPU/%MEM, open sockets and deleted files (from <code>lsof</code>); an interpreter/shell whose parent is a web/DB server is flagged as a <b>web shell</b> (+3).</li>
       <li><b>Config drift + auth stack (v0.6):</b> risky <code>sshd_config</code> directives (PermitRootLogin, PasswordAuthentication, PermitEmptyPasswords, non-standard Port, forwarding) and <code>pam.d</code> weaknesses (nullok, <code>pam_exec</code>, an always-succeed <code>pam_permit</code>) score into Persistence &amp; system findings. <b>auditd</b> and <b>AppArmor/SELinux DENIED</b> events are counted.</li>
-      <li><b>MITRE ATT&amp;CK (v0.6):</b> every finding is tagged with the relevant technique (shown in the detail pane); the Overview lists the distinct techniques observed.</li>
+      <li><b>MITRE ATT&amp;CK (v0.6, reworked v0.10):</b> findings carry <em>possible</em> technique mappings derived from their scoring tags (shown in the detail pane); the Overview lists the distinct candidates. These are heuristic leads to investigate, not confirmed behaviour - mappings that overclaimed (IOC hit, external connection, single failed login, AppArmor denial, transient PID) were removed in v0.10.</li>
       <li><b>Journal contents via WSL (v0.6):</b> when <code>wsl.exe</code> and binary journals are present, the Logs tab's <b>Load journal contents (WSL)</b> button runs <code>journalctl -o json</code> against the extracted journal and adds sudo / sshd / unit / seccomp / segfault / audit events to the Events timeline. (Journal <em>coverage/gap</em> analysis needs no WSL.)</li>
       <li><b>Inventory tab</b> - a map of every key artifact (processes, network, logons, accounts, persistence, system, filesystem, logs, containers) showing present/absent, size, and an <b>open folder</b> link that opens the raw file in Explorer. The Persistence &amp; config inventory on Overview has the same open-folder links; click an artifact name there to view its contents inline.</li>
       <li><b>UI (v0.7):</b> the Processes table has a <b>Name</b> column and a <b>Tree view</b> toggle (collapsible parent/child hierarchy - click ▸/▾ to fold, a row for detail). <b>Logons</b> has User / Source / Result filters and a clickable link to each raw source log. <b>Events</b> has a min-score filter and a kind filter. Long tables keep their <b>header row frozen</b> while scrolling, and <b>Persistence &amp; system findings</b> shows a date/time column.</li>
       <li><b>Resizable columns</b> everywhere - drag the right edge of any column header (it highlights on hover); double-click the edge to reset. Widths persist per view.</li>
+      <li><b>Evidence-hygiene &amp; correctness release (v0.10):</b> host-local timestamps (classic syslog, <code>last -F</code>, boot tables, apt/dpkg logs) are normalized to UTC at ingest using the collector's offset, with Dec→Jan year-rollover handling - the host-TZ toggle is now exact for every source. Extracted-<b>folder</b> input is treated as read-only evidence: rotated <code>.gz</code> logs inflate into a per-run <code>gzcache</code> under the output directory instead of the source tree. WSL journal events reset between captures (no cross-case carry-over). A <b>hostname-mismatch gate</b> stops analysis when uac.log disagrees with the typed Target hostname. Dual-use package installs (nmap, tcpdump, …) are tagged <b>TOOLING</b> - context, no longer counted as IOC or auto-flagged. wtmp/btmp/lastlog binary decode is gated to Linux glibc x86-64 captures with per-record timestamp validation, and the host's own <code>last/lastb</code> text output is preferred when present. CSV exports neutralize formula-injection cells. Classic-syslog service inventory and hostname-consistency checks fixed (both silently failed or false-fired on <code>Jul 17 12:34:56</code>-style logs). IPv6 <code>/proc/net</code> sockets are decoded. <b>Offline mode:</b> an <code>offline.txt</code> next to the app disables every outbound network feature. <code>runinfo.json</code> gains run id, capture host, UAC version, profile and TZ offset, and <code>finishedUtc</code> is now really UTC.</li>
     </ul>
     <h3>Command line</h3>
     <p><code>mshta "UAC-Triage-Tool.hta" "&lt;archiveOrFolder&gt;" ["&lt;outDir&gt;"] [/auto] [/from:yyyy-MM-dd] [/to:yyyy-MM-dd]</code></p>

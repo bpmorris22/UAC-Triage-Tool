@@ -142,6 +142,7 @@
   <h1>UAC Triage Tool <small>- Unix-like Artifacts Collector triage <span id="appver"></span></small></h1>
   <span class="pill" id="verpill">tar: checking&hellip;</span>
   <span class="pill" id="srcpill">no capture loaded</span>
+  <span class="pill hide" id="timepill" title="Elapsed processing time (extraction + parse). Ticks every half-second - if it stops moving for minutes AND the current-step name in the status line never changes, the app is actually stuck.">0:00</span>
   <span class="pill clk hide" id="profpill" onclick="openProfModal()" title="Collection profile detected from uac.log's command line - click for coverage details"></span>
   <span style="float:right">
     <button class="btn" id="instrBtn" onclick="openInstructions()" title="Download the latest HTML field guide from GitHub and open it in your browser">Instructions</button>
@@ -337,7 +338,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.11.0";
+var APP_VERSION = "0.12.0";
 /* v0.9.4 - SQLECmd wrapper: offer to DOWNLOAD instead of hunt for it (operator request):
    - if the wrapper isn't found anywhere, a hand-off now offers to download the latest
      SQLECmd-Wrapper.hta from GitHub into THIS app's folder (browse stays as the offline
@@ -533,8 +534,10 @@ function esc(s){ if(s==null) return ""; s=String(s);
 function nf(n){ n=String(n); var dot=n.indexOf("."); var dec=""; if(dot>=0){ dec=n.substring(dot); n=n.substring(0,dot); }
   var r="",c=0; for(var k=n.length-1;k>=0;k--){ r=n.charAt(k)+r; c++; if(c%3===0&&k>0) r=","+r; } return r+dec; }
 function setStatus(msg,cls){ var el=$("status"); el.innerHTML=esc(msg); el.className=cls||"muted"; }
-function appendLog(t){ var el=$("log"); if(el.getAttribute("data-ph")==="1"){ el.innerHTML=""; el.setAttribute("data-ph","0"); }
-  el.style.display="block"; $("logToggle").innerHTML="Hide log"; el.innerHTML+=esc(t)+"\n"; el.scrollTop=el.scrollHeight; }
+/* quiet=true appends WITHOUT forcing the log panel open (v0.12: perf/diagnostic lines) */
+function appendLog(t, quiet){ var el=$("log"); if(el.getAttribute("data-ph")==="1"){ el.innerHTML=""; el.setAttribute("data-ph","0"); }
+  if(!quiet){ el.style.display="block"; $("logToggle").innerHTML="Hide log"; }
+  el.innerHTML+=esc(t)+"\n"; el.scrollTop=el.scrollHeight; }
 function trimStr(s){ return String(s).replace(/^\s+|\s+$/g,""); }
 function baseName(p){ if(!p) return ""; p=String(p); var i=Math.max(p.lastIndexOf("\\"),p.lastIndexOf("/")); return i>=0?p.substring(i+1):p; }
 function showEl(id,vis){ var e=$(id); if(!e) return; var c=e.className.replace(/\s*\bhide\b/g,"");
@@ -711,6 +714,7 @@ function tzLabel(){ if(!TZVIEW || !META.tzOffMin) return "UTC";
 
 /* Run a batch script, wait, return {rc, log}. show=true → visible console. - family verbatim */
 function runBat(lines, show){
+  var t0=new Date().getTime();   // v0.12: every external command's duration is logged for perf triage
   var fso=new ActiveXObject("Scripting.FileSystemObject");
   var sh=new ActiveXObject("WScript.Shell");
   var tmp=fso.GetSpecialFolder(2)+"";
@@ -726,7 +730,9 @@ function runBat(lines, show){
   try{ if(fso.FileExists(logp)) txt=readUtf8(logp); }catch(e){ txt="(could not read log: "+e.message+")"; }
   try{ fso.DeleteFile(bat); }catch(e2){}
   try{ if(fso.FileExists(logp)) fso.DeleteFile(logp); }catch(e3){}
-  return { rc:rc, log:txt };
+  var ms=new Date().getTime()-t0;
+  try{ appendLog("[perf] external: "+trunc(trimStr(String(lines[0]||"")),80)+" -> rc="+rc+", "+nf(ms)+" ms", true); }catch(e5){}
+  return { rc:rc, log:txt, ms:ms };
 }
 /* Run a batch NON-blocking; writes a .done marker when finished. Keeps the HTA responsive. */
 function runBatAsync(lines, show){
@@ -759,6 +765,45 @@ function pollDone(ctx){
   if(ctx.elapsed>1800){ ctx.onTimeout&&ctx.onTimeout(); return; }   // 30-min cap (big tarballs)
   if(ctx.onTick) ctx.onTick(ctx.elapsed);
   window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+
+/* ---------- v0.12: processing-time pill + per-step perf log ----------
+   The parse pipeline yields to the UI between steps (runParseSteps), so this half-second timer
+   really does tick while work is in flight - a frozen pill + a never-changing status step means
+   an actual hang, not just a long step. */
+var PROCPILL={ timer:null, t0:0, label:"" };
+var PERF=[];                 // [{step,ms,err}] for the current run
+var PARSE_T0=0, EXTRACT_T0=0, EXTRACT_MS=0;
+function fmtDur(ms){ if(ms<0) ms=0; var s=Math.floor(ms/1000); var m=Math.floor(s/60);
+  return m+":"+p2n(s%60); }
+function startProcPill(label){
+  PROCPILL.label=label||"processing";
+  if(!PROCPILL.timer){ PROCPILL.t0=new Date().getTime();
+    PROCPILL.timer=window.setInterval(tickProcPill, 500); }
+  showEl("timepill", true); tickProcPill();
+}
+function setProcPillLabel(label){ PROCPILL.label=label; tickProcPill(); }
+function tickProcPill(){ var el=$("timepill"); if(!el) return;
+  el.className="pill warn";
+  el.innerHTML=esc(PROCPILL.label)+" "+fmtDur(new Date().getTime()-PROCPILL.t0); }
+function stopProcPill(ok){
+  if(PROCPILL.timer){ window.clearInterval(PROCPILL.timer); PROCPILL.timer=null; }
+  var el=$("timepill"); if(!el) return;
+  var tot=fmtDur(new Date().getTime()-PROCPILL.t0);
+  if(ok){ el.className="pill ok"; el.innerHTML="done in "+tot; }
+  else { el.className="pill bad"; el.innerHTML="stopped at "+tot; }
+}
+/* write the entire on-screen log (incl. [perf] lines) beside the other outputs so it can be
+   attached to a bug/perf report without screenshotting the log panel */
+function saveRunLog(){
+  try{
+    if(!LASTOUTDIR) return;
+    var el=$("log"); var txt=el?(el.innerText!=null?el.innerText:(el.textContent||"")):"";
+    if(!trimStr(txt)) return;
+    var p=String(LASTOUTDIR).replace(/[\\\/]+$/,"")+"\\parse_log_"+nowStamp()+".txt";
+    writeUtf8(p, "UAC Triage Tool v"+APP_VERSION+" run log\r\nwritten: "+new Date()+"\r\n\r\n"+txt);
+    appendLog("Run log written: "+p, true);
+  }catch(e){}
 }
 
 /* ---------- fs helpers (family) ---------- */
@@ -886,6 +931,9 @@ function writeRunInfo(outdir, input, freshFiles){
               // v0.10 provenance: run id + what the capture itself said
               runId:uid(), captureHost:(META.host||""), uacVersion:(META.uacVer||""),
               profile:(CAPPROF?CAPPROF.key:""), hostTzOffMin:(META.tzOffMin||0),
+              // v0.12: performance provenance - per-step parse timings for perf/bug reports
+              extractMs:(EXTRACT_MS||0), parseMs:(PARSE_T0?(new Date().getTime()-PARSE_T0):0),
+              parseSteps:(function(){ var a=[],i2; for(i2=0;i2<PERF.length;i2++){ a.push({step:PERF[i2].step, ms:PERF[i2].ms, failed:!!PERF[i2].err}); } return a; })(),
               timestampNote:"host-local sources (classic syslog, last -F, boots, apt/dpkg) normalized to UTC via hostTzOffMin at ingest"};
     if(CASE_FROM) ent.winFrom=CASE_FROM; if(CASE_TO) ent.winTo=CASE_TO;
     arr.push(ent);
@@ -971,6 +1019,8 @@ function analyze(){
     if(!root0){ setStatus("That folder does not contain uac.log (not an extracted UAC capture). Point at the folder holding uac.log, or at the archive.","err"); return; }
     setStatus("Parsing extracted capture…","muted");
     SRC_EVIDENCE=true;   // operator-supplied folder = evidence; parsers must not write into it
+    EXTRACT_MS=0;
+    startProcPill("parsing");   // v0.12: live m:ss so a long parse is visibly not a hang
     window.setTimeout(function(){ parseCapture(root0, inp); }, 40);
     return;
   }
@@ -991,6 +1041,8 @@ function analyze(){
   }
   appendLog("Extracting "+inp+"\n  -> "+exDir+"\n(bsdtar exits 1 on UAC tarballs because of Unix symlinks - that's expected; success is judged by uac.log appearing.)");
   BUSY=true; $("procBtn").disabled=true;
+  EXTRACT_T0=new Date().getTime();
+  startProcPill("extracting");   // v0.12
   setStatus("Extracting… a console window shows progress.","muted");
   var lines=[
     'if not exist "'+batEsc(runDir)+'" mkdir "'+batEsc(runDir)+'"',
@@ -1003,14 +1055,17 @@ function analyze(){
   ];
   var ctx=runBatAsync(lines, true);
   ctx.onTick=function(s){ setStatus("Extracting… "+s+"s","muted"); };
-  ctx.onTimeout=function(){ BUSY=false; $("procBtn").disabled=false; setStatus("Extraction still running after 30 min - stopped watching. Check the output folder.","err"); };
+  ctx.onTimeout=function(){ BUSY=false; $("procBtn").disabled=false; stopProcPill(false); setStatus("Extraction still running after 30 min - stopped watching. Check the output folder.","err"); };
   ctx.onDone=function(log){ BUSY=false; $("procBtn").disabled=false; extractDone(log, exDir, inp); };
   window.setTimeout(function(){ pollDone(ctx); }, 1000);
 }
 function extractDone(log, exDir, input){
+  EXTRACT_MS=EXTRACT_T0?(new Date().getTime()-EXTRACT_T0):0;
+  appendLog("[perf] extraction (bsdtar): "+fmtDur(EXTRACT_MS)+" ("+nf(EXTRACT_MS)+" ms)", true);
   appendLog("--- tar extraction ---\n"+trunc(log,4000));
   var root=findUacRoot(exDir);
   if(!root){
+    stopProcPill(false);
     if(/passphrase|password|encrypted|incorrect|unable to open|cannot open/i.test(log))
       setStatus("Extraction failed - the archive looks password-protected (UAC -P). bsdtar can't open encrypted zips. Extract it with 7-Zip, then point this app at the folder.","err");
     else
@@ -1051,50 +1106,80 @@ function parseCapture(root, input){
         var od2=trimStr($("outDir").value); if(od2){ LASTOUTDIR=od2; ensureDir(od2); }
         appendLog("Hostname mismatch resolved: relabeled run as "+capHost+" (was "+typedHost+"); output -> "+LASTOUTDIR);
       } else {
+        stopProcPill(false);
         setStatus("Stopped - hostname mismatch (capture says '"+capHost+"', you entered '"+typedHost+"'). Fix the Target hostname or pick the right capture, then Analyze again.","err");
         $("srcpill").innerHTML="no capture loaded";
         return;
       }
     }
     updateProfPill();             // v0.9: color-coded capture-profile pill in the header
-    buildTreeList(root);          // v0.5.1: long-path-safe listing + >260-char audit (feeds parseJournal)
-    inflateLogs(root);            // v0.4: decompress rotated .gz logs BEFORE any log parser reads them
-    parseProcesses(root);
-    parseTop(root);               // v0.5: %CPU/%MEM + processes only top saw
-    parseProcDeep(root);          // v0.5: per-pid environ/fd/maps/comm (also fills SOCKINODE)
-    parseLsof(root);              // v0.6: per-pid deleted files + network sockets
-    buildProcTree();              // v0.6: pid/ppid child+parent maps for tree walks + webshell scoring
-    parseNetwork(root);
-    parseLogons(root);
-    parseBodyfile(root);
-    parsePackages(root);
-    parseContainers(root);
-    parseSyslogServices(root);    // v0.4
-    parseJournal(root);           // v0.4
-    parseCloudInit(root);         // v0.4
-    parseSar(root);               // v0.4
-    parseBoots(root);             // v0.5: journalctl --list-boots
-    deepParsePersistence(root);   // resets PERSFIND - every pushPersFind producer runs after this
-    parseAccounts(root);          // v0.5: passwd/group findings + UIDNAME map
-    parseSystemdLive(root);       // v0.5: timers / enabled units / kernel taint
-    parseFsFindings(root);        // v0.5: suid / getcap / world-writable / hidden sweeps
-    parseSshFindings(root);       // v0.5: null-passphrase private keys
-    parseHistories(root);         // v0.5/v0.6: hostile history one-liners (+timestamps, more files)
-    parseProcNet(root);           // v0.5: needs UIDNAME + SOCKINODE; enriches/extends NET
-    parseAudit(root);             // v0.6: auditd + AppArmor/SELinux denials
-    parseConfigDrift(root);       // v0.6: sshd_config + pam.d (pushes into PERSFIND)
-    parseWebLogs(root);           // v0.11: apache/nginx/httpd access logs (initial access)
-    parseUsers(root);             // v0.11: per-account table (needs LASTLOGIN from parseLogons)
-    parseAuditDetail(root);       // v0.11: auditd execve/login detail (needs UIDNAME)
-    parseLateral(root);           // v0.11: outbound-SSH evidence (needs PERSFIND histories)
-    parseEtcHosts(root);          // v0.11: non-default /etc/hosts pins
-    parseModulesCheck(root);      // v0.11: loaded modules vs known LKM-rootkit names
-    buildPersistence(root);
-    sweepBrowserDbs(root);        // v0.8: browser SQLite DBs (Overview hand-off + inventory row)
-    buildInventory(root);
-    buildIntegrity(root);         // v0.4 (after the above; some checks append during their own parse)
-    if(IOCS.length){ setStatus("Sweeping tree for IOCs…","muted"); sweepIocs(root); sweepHashExecutables(root); } else { IOCHITS=[]; }
-    rescoreAll();
+    /* v0.12: the parser pipeline runs as a QUEUE with a setTimeout yield between steps, so
+       (a) the processing-time pill and per-step status line repaint while work is in flight,
+       (b) each step's duration lands in the log ([perf] lines) for performance triage, and
+       (c) one failing parser no longer aborts every parser after it - it is logged and skipped. */
+    BUSY=true; $("procBtn").disabled=true;
+    PERF=[]; PARSE_T0=new Date().getTime();
+    startProcPill("parsing");     // no-op if the extraction phase already started the clock
+    var steps=[
+      ["tree list + long-path audit", function(){ buildTreeList(root); }],
+      ["gz inflation",               function(){ inflateLogs(root); }],
+      ["processes (ps)",             function(){ parseProcesses(root); }],
+      ["top",                        function(){ parseTop(root); }],
+      ["per-pid /proc deep-dive",    function(){ parseProcDeep(root); }],
+      ["lsof",                       function(){ parseLsof(root); }],
+      ["process tree",               function(){ buildProcTree(); }],
+      ["network (ss)",               function(){ parseNetwork(root); }],
+      ["logons (auth/wtmp/lastlog)", function(){ parseLogons(root); }],
+      ["bodyfile timeline",          function(){ parseBodyfile(root); }],
+      ["packages",                   function(){ parsePackages(root); }],
+      ["containers",                 function(){ parseContainers(root); }],
+      ["syslog service inventory",   function(){ parseSyslogServices(root); }],
+      ["journal filename analysis",  function(){ parseJournal(root); }],
+      ["cloud-init",                 function(){ parseCloudInit(root); }],
+      ["sar",                        function(){ parseSar(root); }],
+      ["boots",                      function(){ parseBoots(root); }],
+      ["persistence deep-parse",     function(){ deepParsePersistence(root); }],
+      ["accounts",                   function(){ parseAccounts(root); }],
+      ["systemd live state",         function(){ parseSystemdLive(root); }],
+      ["fs findings (suid/ww)",      function(){ parseFsFindings(root); }],
+      ["ssh key findings",           function(){ parseSshFindings(root); }],
+      ["shell histories",            function(){ parseHistories(root); }],
+      ["/proc/net decode",           function(){ parseProcNet(root); }],
+      ["auditd summary",             function(){ parseAudit(root); }],
+      ["config drift",               function(){ parseConfigDrift(root); }],
+      ["web-server access logs",     function(){ parseWebLogs(root); }],
+      ["user accounts table",        function(){ parseUsers(root); }],
+      ["auditd detail",              function(){ parseAuditDetail(root); }],
+      ["lateral movement",           function(){ parseLateral(root); }],
+      ["/etc/hosts pins",            function(){ parseEtcHosts(root); }],
+      ["kernel-module check",        function(){ parseModulesCheck(root); }],
+      ["persistence inventory",      function(){ buildPersistence(root); }],
+      ["browser DB sweep",           function(){ sweepBrowserDbs(root); }],
+      ["artifact inventory",         function(){ buildInventory(root); }],
+      ["integrity checks",           function(){ buildIntegrity(root); }],
+      ["IOC tree sweep",             function(){ if(IOCS.length){ sweepIocs(root); sweepHashExecutables(root); } else { IOCHITS=[]; } }],
+      ["scoring + events build",     function(){ rescoreAll(); }]
+    ];
+    runParseSteps(steps, 0, root, input);
+  }catch(e){ BUSY=false; $("procBtn").disabled=false; stopProcPill(false); setStatus("Parse error: "+e.message,"err"); appendLog("Parse error: "+e.message); }
+}
+function runParseSteps(steps, i, root, input){
+  if(i>=steps.length){ finishParse(root, input); return; }
+  var name=steps[i][0];
+  setStatus("Parsing ("+(i+1)+"/"+steps.length+"): "+name+"…","muted");
+  setProcPillLabel("parsing "+(i+1)+"/"+steps.length);
+  window.setTimeout(function(){
+    var t0=new Date().getTime(), err="";
+    try{ steps[i][1](); }catch(e){ err=e.message||String(e); }
+    var ms=new Date().getTime()-t0;
+    PERF.push({step:name, ms:ms, err:err});
+    if(err) appendLog("[perf] "+name+": FAILED after "+nf(ms)+" ms - "+err+" (skipped; remaining parsers continue)");
+    else if(ms>=250) appendLog("[perf] "+name+": "+nf(ms)+" ms", true);   // only slow steps inline; full table at the end
+    runParseSteps(steps, i+1, root, input);
+  }, 15);
+}
+function finishParse(root, input){
+  try{
     maybeEnrichGeo();             // v0.11: async geo/ASN for public IPs (online toggle; offline.txt wins)
     // provenance + summary
     var produced=[];
@@ -1106,11 +1191,27 @@ function parseCapture(root, input){
       +" &middot; "+nf(PROC.length)+"p / "+nf(NET.length)+"c / "+nf(TIMEL.length)+"t";
     setTab("overview", true);
     render();
+    // perf summary: every step, plus extraction and totals - the block to copy into a perf report
+    var parseMs=new Date().getTime()-PARSE_T0, failed=0, slow=null, pl=[], pi;
+    pl.push("[perf] ---- run timing summary ----");
+    if(EXTRACT_MS) pl.push("[perf] extraction: "+nf(EXTRACT_MS)+" ms ("+fmtDur(EXTRACT_MS)+")");
+    for(pi=0;pi<PERF.length;pi++){ var pp=PERF[pi];
+      pl.push("[perf] "+(pi+1<10?" ":"")+(pi+1)+". "+pp.step+": "+nf(pp.ms)+" ms"+(pp.err?("  FAILED: "+pp.err):""));
+      if(pp.err) failed++;
+      if(!slow||pp.ms>slow.ms) slow=pp; }
+    pl.push("[perf] parse total: "+nf(parseMs)+" ms ("+fmtDur(parseMs)+")"
+      +(EXTRACT_MS?("; extract+parse: "+fmtDur(EXTRACT_MS+parseMs)):"")
+      +(slow?("; slowest step: "+slow.step+" ("+nf(slow.ms)+" ms)"):"")
+      +(failed?("; "+failed+" step(s) FAILED - see above"):""));
+    appendLog(pl.join("\n"), !failed);
     var fl=buildRunSummary();
-    setStatus("Parsed "+esc(META.host||baseName(root))+" - "+nf(PROC.length)+" processes, "+nf(NET.length)+" connections, "+nf(LOGON.length)+" logons, "+nf(TIMEL.length)+" timeline rows"
+    setStatus("Parsed "+esc(META.host||baseName(root))+" in "+fmtDur(parseMs)+" - "+nf(PROC.length)+" processes, "+nf(NET.length)+" connections, "+nf(LOGON.length)+" logons, "+nf(TIMEL.length)+" timeline rows"
       +(fl&&fl.flagged?(", "+nf(fl.flagged)+" flagged"):"")+".","ok");
+    BUSY=false; $("procBtn").disabled=false;
+    stopProcPill(true);
+    saveRunLog();                 // v0.12: full log (incl. [perf]) -> <outdir>\parse_log_<stamp>.txt
     maybeProfWarn();              // v0.9: non-full live capture -> excluded-artifacts warning
-  }catch(e){ setStatus("Parse error: "+e.message,"err"); appendLog("Parse error: "+e.message); }
+  }catch(e){ BUSY=false; $("procBtn").disabled=false; stopProcPill(false); setStatus("Parse error: "+e.message,"err"); appendLog("Parse error: "+e.message); }
 }
 
 /* metadata from uac.log header block + host boot time / uptime */
@@ -3366,8 +3467,9 @@ function maybeEnrichGeo(){
   geoBatch(need, 0);
 }
 function geoBatch(list, off){
-  if(off>=list.length){ GEO_STATE="done"; appendLog("Geo/ASN: enrichment complete ("+list.length+" IPs)."); try{ render(); }catch(er){} return; }
+  if(off>=list.length){ GEO_STATE="done"; appendLog("Geo/ASN: enrichment complete ("+list.length+" IPs).", true); try{ render(); }catch(er){} return; }
   var chunk=list.slice(off, off+100);
+  var gb0=new Date().getTime();
   try{
     var x=new ActiveXObject("MSXML2.XMLHTTP.6.0");
     x.open("POST","http://ip-api.com/batch?fields=status,country,countryCode,as,query",true);
@@ -3377,6 +3479,7 @@ function geoBatch(list, off){
       try{
         if(x.status===200){
           ok=true;
+          appendLog("[perf] geo batch "+(Math.floor(off/100)+1)+" ("+chunk.length+" IPs): "+nf(new Date().getTime()-gb0)+" ms", true);
           // regex extraction, NOT eval/JSON - a tampered HTTP response must never execute
           var re=/\{[^{}]*\}/g, om, txt=x.responseText+"";
           while((om=re.exec(txt))){ var o=om[0];
@@ -4804,7 +4907,9 @@ function init(){
 function reparseTimeline(){
   if(!LASTROOT) return;
   // bodyfile + packages are window-filtered AT PARSE TIME (filter, never scored); logons filter at render
+  var t0=new Date().getTime();
   parseBodyfile(LASTROOT); parsePackages(LASTROOT); rescoreAll(); render();
+  appendLog("[perf] case-window reparse (bodyfile+packages+rescore): "+nf(new Date().getTime()-t0)+" ms", true);
   appendLog("Case window "+($("dfrom").value||"…")+" .. "+($("dto").value||"…")+" applied - "+nf(TIMEL.length)+" timeline rows, "+nf(PKGS.length)+" package installs.");
 }
 window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }catch(e){} };
@@ -4853,6 +4958,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Inventory tab</b> - a map of every key artifact (processes, network, logons, accounts, persistence, system, filesystem, logs, containers) showing present/absent, size, and an <b>open folder</b> link that opens the raw file in Explorer. The Persistence &amp; config inventory on Overview has the same open-folder links; click an artifact name there to view its contents inline.</li>
       <li><b>UI (v0.7):</b> the Processes table has a <b>Name</b> column and a <b>Tree view</b> toggle (collapsible parent/child hierarchy - click ▸/▾ to fold, a row for detail). <b>Logons</b> has User / Source / Result filters and a clickable link to each raw source log. <b>Events</b> has a min-score filter and a kind filter. Long tables keep their <b>header row frozen</b> while scrolling, and <b>Persistence &amp; system findings</b> shows a date/time column.</li>
       <li><b>Resizable columns</b> everywhere - drag the right edge of any column header (it highlights on hover); double-click the edge to reset. Widths persist per view.</li>
+      <li><b>Progress &amp; perf-diagnostics release (v0.12):</b> a <b>processing-time pill</b> in the header ticks m:ss every half-second through extraction and parsing (the parser pipeline now yields to the UI between steps, so the clock genuinely moves - a frozen pill plus a never-changing step name in the status line means a real hang). The status line shows the <b>current step (k/38)</b> by name. Every step's duration is logged as <code>[perf]</code> lines (slow steps inline, full table at the end, incl. the slowest step and extraction time), external commands (bsdtar, robocopy, PowerShell, WSL journalctl) log their run time and exit code, and a failing parser is <b>skipped and logged</b> instead of aborting everything after it. The complete on-screen log (with all <code>[perf]</code> lines) is written to <code>parse_log_&lt;stamp&gt;.txt</code> beside the other outputs after each run - attach that file to any performance/bug report. <code>runinfo.json</code> gains <code>extractMs</code>, <code>parseMs</code> and the per-step timing array.</li>
       <li><b>Triage-workflow release (v0.11):</b> three new tabs - <b>Web logs</b> (apache/nginx/httpd access logs parsed &amp; scored: POSTs to script URIs, traversal/encoded payloads, tool user-agents - the initial-access evidence the live web-shell check can't see), <b>Users</b> (per-account: shell, groups, shadow lock state, authorized_keys count, history size, last login), and <b>Audit</b> (auditd <code>execve</code> args - hex-decoded - plus login records: the closest Linux gets to process-creation telemetry). <b>Logons → By source IP</b> aggregates first/last seen, failures, successes and users tried per source. <b>Pivot ±15 min:</b> click an Events timestamp (or the link in any logon/web/audit detail pane) to jump to the filesystem Timeline windowed around that moment - the anchor-and-expand workflow. <b>Lateral movement panel</b> (Overview): known_hosts destinations + <code>~/.ssh/config</code> + typed ssh/scp/rsync commands, corroboration-tagged. <b>Online geo/ASN enrichment</b> (checkbox, default on; <code>offline.txt</code> overrules): public IPs across logons/network/web/audit get country + ASN chips via ip-api.com - only the bare IP list is sent, never case data. Persistence sweeps extended to <code>update-motd.d</code>, APT <code>Pre/Post-Invoke</code> hooks, <code>modprobe.d install</code> lines, XDG autostart, shell startup files, and <b>PAM module directories</b> (a non-<code>pam_*.so</code> shared object there is the 2025 Plague-backdoor pattern). <code>/etc/hosts</code> pins and known LKM-rootkit module names surface on the Logs tab, and Events gains a <b>hide TOOLING</b> toggle.</li>
       <li><b>Evidence-hygiene &amp; correctness release (v0.10):</b> host-local timestamps (classic syslog, <code>last -F</code>, boot tables, apt/dpkg logs) are normalized to UTC at ingest using the collector's offset, with Dec→Jan year-rollover handling - the host-TZ toggle is now exact for every source. Extracted-<b>folder</b> input is treated as read-only evidence: rotated <code>.gz</code> logs inflate into a per-run <code>gzcache</code> under the output directory instead of the source tree. WSL journal events reset between captures (no cross-case carry-over). A <b>hostname-mismatch gate</b> stops analysis when uac.log disagrees with the typed Target hostname. Dual-use package installs (nmap, tcpdump, …) are tagged <b>TOOLING</b> - context, no longer counted as IOC or auto-flagged. wtmp/btmp/lastlog binary decode is gated to Linux glibc x86-64 captures with per-record timestamp validation, and the host's own <code>last/lastb</code> text output is preferred when present. CSV exports neutralize formula-injection cells. Classic-syslog service inventory and hostname-consistency checks fixed (both silently failed or false-fired on <code>Jul 17 12:34:56</code>-style logs). IPv6 <code>/proc/net</code> sockets are decoded. <b>Offline mode:</b> an <code>offline.txt</code> next to the app disables every outbound network feature. <code>runinfo.json</code> gains run id, capture host, UAC version, profile and TZ offset, and <code>finishedUtc</code> is now really UTC.</li>
     </ul>

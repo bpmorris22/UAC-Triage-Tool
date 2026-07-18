@@ -81,6 +81,18 @@
   /* v1.4: per-tab table heading (shared table card) */
   .tblhead{margin:0 0 8px;font-size:13px;font-weight:600;color:#e6edf3}
   .tblhead .d{font-size:11px;font-weight:400;color:#8b949e;text-transform:none;margin-left:8px}
+  /* v1.5: mini charts (div-based - HTA IE mode has no reliable canvas) */
+  .chart{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px 12px;margin-bottom:10px}
+  .chart .ct{font-size:12px;font-weight:600;color:#e6edf3}
+  .chart .cd{font-size:11px;color:#8b949e;margin:2px 0 8px}
+  .chart .bars{white-space:nowrap;overflow-x:auto;padding-top:2px}
+  .vbar{display:inline-block;width:14px;height:70px;margin-right:1px;position:relative;vertical-align:top;background:#161b22}
+  .vbar i{position:absolute;left:0;width:100%}
+  .chart .lg{font-size:11px;color:#8b949e;margin-top:6px}
+  .hbar{margin:3px 0;font-size:11px;white-space:nowrap}
+  .hbar .hl{display:inline-block;width:150px;color:#c9d1d9;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
+  .hbar .ht{display:inline-block;height:12px;background:#1f6feb;vertical-align:middle;border-radius:2px}
+  .hbar .hn{margin-left:6px;color:#8b949e}
   .row{white-space:nowrap}
   .stat{display:inline-block;background:#1c2330;border:1px solid #30363d;border-radius:8px;padding:6px 12px;margin:0 6px 6px 0;min-width:70px;vertical-align:top}
   .stat .n{font-size:17px;font-weight:700;display:block}
@@ -184,7 +196,7 @@
       <button class="btn" id="iocBtn2" title="Edit the IOC / keyword list used for scoring and the tree-wide sweep.">IOC / keywords&hellip;</button>
       <button class="btn" id="logToggle">Show log</button>
       <span class="sep"></span>
-      <label style="font-size:12px" id="onlineWrap" title="Look up country + ASN/org for public IPs seen in logons, network connections and web logs via ip-api.com after each Analyze. Only the bare IP list leaves this machine - no case data. Unticked (or offline.txt next to the app) = no outbound requests."><input type="checkbox" id="onlineChk" checked> online geo/ASN lookups</label>
+      <label style="font-size:12px" id="onlineWrap" title="Look up country + ASN/org for public IPs seen in logons, network connections and web logs via ip-api.com after each Analyze. Only the bare IP list leaves this machine - no case data. Unticked (or offline.txt next to the app) = no outbound requests."><input type="checkbox" id="onlineChk" checked> Online Geo/ASN lookups</label>
       <span class="muted" id="status" style="margin-left:8px"></span>
     </div>
     <div id="iocWrap" class="hide" style="margin-top:8px">
@@ -204,6 +216,7 @@
       <div class="row" id="tabbar" style="margin-bottom:2px">
         <button class="btn on" id="tabOverview" data-tab="overview" title="System overview: run metadata, dataset stats, top findings, sar CPU, network addresses, boot history, cloud-init">Overview</button>
         <button class="btn" id="tabInv" data-tab="inv" title="Map of every key UAC artifact: present/absent, size, open-folder links">UAC Inventory</button>
+        <button class="btn" id="tabLogs" data-tab="logs" title="Log integrity, journal rotation analysis, syslog service inventory, notable events, WSL journal ingestion">Log Integrity</button>
         <button class="btn" id="tabProc" data-tab="proc" title="Running processes (ps + top + per-pid /proc + lsof), scored; flat table or collapsible tree">Processes</button>
         <button class="btn" id="tabNet" data-tab="net" title="Sockets from ss + /proc/net hex-decode cross-check, scored; geo/ASN, service types, VirusTotal links">Network</button>
         <button class="btn" id="tabApps" data-tab="apps" title="Recent package installs + containers (v0.13)">Apps</button>
@@ -217,7 +230,6 @@
         <button class="btn" id="tabTime" data-tab="time" title="Filesystem timeline from the bodyfile (mtime/atime/ctime/crtime), scored; the pivot ±15 min target">Timeline</button>
         <button class="btn" id="tabWeb" data-tab="web" title="Web-server access logs (apache/nginx/httpd combined format) - initial-access hunting">Apache logs</button>
         <button class="btn" id="tabAudit" data-tab="audit" title="auditd execve + login records when audit.log is in the capture (v0.11)">Audit</button>
-        <button class="btn" id="tabLogs" data-tab="logs" title="Log integrity, journal rotation analysis, syslog service inventory, notable events, WSL journal ingestion">Log Integrity</button>
         <button class="btn" id="tabIoc" data-tab="ioc" title="Tree-wide IOC/keyword sweep hits + dormant SHA1 matches from hash_executables">IOC hits</button>
       </div>
     </div>
@@ -228,7 +240,9 @@
         <label style="font-size:12px;margin-right:10px" title="Render times in the collector's host time zone instead of UTC (applies everywhere)."><input type="checkbox" id="tzOv"> Host TZ</label>
         <button class="btn green" id="reportBtn" title="Write a self-contained HTML report of everything parsed (all tabs, navigation pane, scored tables capped at the highest-signal rows) into the output folder and open it.">Generate report</button>
       </span>
-      <!-- v1.4: System overview first, then the sar / network / boots / cloud-init context blocks -->
+      <!-- v1.5: provisioning baseline sits at the very top (when present), then System Overview -->
+      <div id="ovCloud"></div>
+      <!-- v1.4: System overview, then the sar / network / boots context blocks -->
       <h3 title="Run metadata parsed from uac.log, the per-dataset counts, and the highest-scoring findings across every dataset - the at-a-glance triage summary.">System Overview</h3>
       <div class="cards3">
         <div class="col3">
@@ -250,13 +264,11 @@
       <div id="ovNetAddr"></div>
       <!-- v0.14: boots table surfaced here (was on the Logs tab) - boot cadence is capture context -->
       <div id="ovBoots"></div>
-      <!-- v0.15: cloud-init provisioning baseline (was on the Logs tab) - capture context too -->
-      <div id="ovCloud"></div>
     </div>
 
     <!-- PERSISTENCE (v0.13: own tab; v0.16: inventory first, findings gain a score filter) -->
     <div class="card hide" id="persistCard">
-      <h3>Persistence &amp; config inventory <span class="muted" style="font-weight:400;text-transform:none">- click a present file to view its contents</span></h3>
+      <h3>Persistence &amp; config inventory <span class="muted" style="font-weight:400;text-transform:none">- Click a present file to view its contents</span></h3>
       <div class="scroll" style="max-height:38vh"><table id="pTbl" class="pgrid"></table></div>
       <div class="row" style="margin-top:14px;margin-bottom:4px">
         <h3 style="display:inline;margin-right:10px">Persistence &amp; system findings</h3>
@@ -280,7 +292,7 @@
     <div class="card hide" id="appsCard">
       <label style="font-size:12px;float:right" title="Render times in the collector's host time zone instead of UTC."><input type="checkbox" id="tzApps"> Host TZ</label>
       <div id="ctrWrap">
-        <h3>Docker containers <span class="muted" style="font-weight:400;text-transform:none">- running containers (docker/podman), deep-inspected: privileged / host namespaces / sensitive mounts / docker diff implants</span></h3>
+        <h3>Docker containers <span class="muted" style="font-weight:400;text-transform:none">- Running containers (docker/podman), deep-inspected: privileged / host namespaces / sensitive mounts / docker diff implants</span></h3>
         <div class="scroll" style="max-height:30vh"><table id="ctrTbl"></table></div>
       </div>
       <div id="pkgWrap" style="margin-top:14px">
@@ -322,8 +334,8 @@
           <option value="5">score &ge; 5</option>
         </select>
         <span class="mdwrap" data-udrop="1"><button class="btn" id="evKindBtn" data-udrop="1" onclick="mdToggleBtn('evKind')">kind: all ▾</button><div id="evKindPanel" class="hide mdpanel" data-udrop="1"></div></span>
-        <label style="font-size:12px" title="Show only the notable-event kinds (OOM kills, promiscuous mode, USB attach, module loads, /etc/hosts pins, cron/unit summaries, boots, journal rotation anomalies)."><input type="checkbox" id="evNotable"> Notable events only</label>
-        <label style="font-size:12px" title="Show only dual-use / offensive-tooling package installs (nmap, tcpdump, socat, ...) - the fastest way to spot recently installed dual-use tools."><input type="checkbox" id="evToolOnly"> Dual Use Apps</label>
+        <label style="font-size:12px" title="Show only the notable-event kinds (OOM kills, promiscuous mode, USB attach, module loads, /etc/hosts pins, cron/unit summaries, boots, journal rotation anomalies)."><input type="checkbox" id="evNotable"> Notable Events</label>
+        <label style="font-size:12px" title="Show only dual-use / offensive-tooling package installs (nmap, tcpdump, socat, ...) - the fastest way to spot recently installed dual-use tools."><input type="checkbox" id="evToolOnly"> Dual-Use Apps</label>
         <span class="sep"></span>
         <label style="font-size:12px"><input type="checkbox" id="evTz"> Host TZ</label>
         <span class="sep"></span>
@@ -355,24 +367,24 @@
           <button class="btn" id="procTreeBtn" title="Toggle between the flat process table and a collapsible parent/child tree.">Tree view</button></span>
         <span id="netFilters" class="hide"><span class="sep"></span>
           <label style="font-size:12px" title="Show only rows whose REMOTE address is a public (non-RFC1918/loopback/link-local) IP - the outbound/inbound internet traffic."><input type="checkbox" id="netPubOnly"> Public IPs only</label>
-          <span class="mdwrap" data-udrop="1"><button class="btn" id="netLocBtn" data-udrop="1" onclick="mdToggleBtn('netLoc')">location: all ▾</button><div id="netLocPanel" class="hide mdpanel" data-udrop="1"></div></span>
-          <span class="mdwrap" data-udrop="1"><button class="btn" id="netTypeBtn" data-udrop="1" onclick="mdToggleBtn('netType')">type: all ▾</button><div id="netTypePanel" class="hide mdpanel" data-udrop="1"></div></span></span>
+          <span class="mdwrap" data-udrop="1"><button class="btn" id="netLocBtn" data-udrop="1" onclick="mdToggleBtn('netLoc')">Location: all ▾</button><div id="netLocPanel" class="hide mdpanel" data-udrop="1"></div></span>
+          <span class="mdwrap" data-udrop="1"><button class="btn" id="netTypeBtn" data-udrop="1" onclick="mdToggleBtn('netType')">Type: all ▾</button><div id="netTypePanel" class="hide mdpanel" data-udrop="1"></div></span></span>
         <span id="procSusWrap" class="hide"><span class="sep"></span>
-          <span class="mdwrap" data-udrop="1"><button class="btn" id="procSusBtn" data-udrop="1" onclick="mdToggleBtn('procSus')" title="Filter processes by suspicion category (scoring tag)">suspicion: all ▾</button><div id="procSusPanel" class="hide mdpanel" data-udrop="1"></div></span></span>
+          <span class="mdwrap" data-udrop="1"><button class="btn" id="procSusBtn" data-udrop="1" onclick="mdToggleBtn('procSus')" title="Filter processes by suspicion category (scoring tag)">Suspicion: all ▾</button><div id="procSusPanel" class="hide mdpanel" data-udrop="1"></div></span></span>
         <span id="actFilters" class="hide"><span class="sep"></span>
-          <span class="mdwrap" data-udrop="1"><button class="btn" id="actUserBtn" data-udrop="1" onclick="mdToggleBtn('actUser')" title="Filter executed commands by the account whose history they came from">user: all ▾</button><div id="actUserPanel" class="hide mdpanel" data-udrop="1"></div></span></span>
+          <span class="mdwrap" data-udrop="1"><button class="btn" id="actUserBtn" data-udrop="1" onclick="mdToggleBtn('actUser')" title="Filter executed commands by the account whose history they came from">User: all ▾</button><div id="actUserPanel" class="hide mdpanel" data-udrop="1"></div></span></span>
         <span id="usersFilters" class="hide"><span class="sep"></span>
           <span style="position:relative;display:inline-block" data-udrop="1">
-            <button class="btn" id="usersDropBtn" data-udrop="1" title="Multiselect account filter - tick the accounts to show. Nothing ticked = all accounts.">accounts: all ▾</button>
+            <button class="btn" id="usersDropBtn" data-udrop="1" title="Multiselect account filter - tick the accounts to show. Nothing ticked = all accounts.">Accounts: all ▾</button>
             <div id="usersDropPanel" class="hide" data-udrop="1" style="position:absolute;top:105%;left:0;z-index:80;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 10px;max-height:220px;overflow:auto;min-width:170px;text-align:left"></div>
           </span>
           <span class="lnk" id="usersSelClear" style="font-size:11px" title="Clear the account selection">clear</span>
           <label style="font-size:12px" title="Show only accounts that can actually be logged into: interactive shell AND (password usable OR SSH keys present). '?' rows (shadow not collected) are treated as enabled if they have keys."><input type="checkbox" id="usersEnabledOnly"> Enabled only</label>
           <button class="btn" id="usersByGrpBtn" title="Switch to the group view: every group with its GID and member accounts (primary + supplementary). Click a group for the full member list. (v0.17)">By group</button></span>
         <span id="logonFilters" class="hide"><span class="sep"></span>
-          <span class="mdwrap" data-udrop="1"><button class="btn" id="logfUserBtn" data-udrop="1" onclick="mdToggleBtn('logfUser')">user: all ▾</button><div id="logfUserPanel" class="hide mdpanel" data-udrop="1"></div></span>
-          <span class="mdwrap" data-udrop="1"><button class="btn" id="logfSrcBtn" data-udrop="1" onclick="mdToggleBtn('logfSrc')">source: all ▾</button><div id="logfSrcPanel" class="hide mdpanel" data-udrop="1"></div></span>
-          <span class="mdwrap" data-udrop="1"><button class="btn" id="logfResultBtn" data-udrop="1" onclick="mdToggleBtn('logfResult')">result: all ▾</button><div id="logfResultPanel" class="hide mdpanel" data-udrop="1"></div></span>
+          <span class="mdwrap" data-udrop="1"><button class="btn" id="logfUserBtn" data-udrop="1" onclick="mdToggleBtn('logfUser')">User: all ▾</button><div id="logfUserPanel" class="hide mdpanel" data-udrop="1"></div></span>
+          <span class="mdwrap" data-udrop="1"><button class="btn" id="logfSrcBtn" data-udrop="1" onclick="mdToggleBtn('logfSrc')">Source: all ▾</button><div id="logfSrcPanel" class="hide mdpanel" data-udrop="1"></div></span>
+          <span class="mdwrap" data-udrop="1"><button class="btn" id="logfResultBtn" data-udrop="1" onclick="mdToggleBtn('logfResult')">Result: all ▾</button><div id="logfResultPanel" class="hide mdpanel" data-udrop="1"></div></span>
           <button class="btn" id="logonByIpBtn" title="Aggregate logons per source IP: first/last seen, failure + success counts, users tried, geo/ASN. The fastest brute-force triage view. (v0.11)">By source IP</button>
           <label style="font-size:12px" title="lastlog rows are per-account STATE (one row per account's most recent login), not events - they now live on the Users tab. Untick to mix them back into this event list."><input type="checkbox" id="logfHideLastlog" checked> Hide lastlog rows</label></span>
         <span id="bruteWrap" class="hide"><span class="sep"></span>
@@ -391,9 +403,12 @@
         <button class="btn violet" id="copyBtn" title="Copy the current filtered view (up to 500 rows) to the clipboard as compact pipe-delimited text lines - ready to paste into case notes.">Copy to Clipboard</button>
         <span class="muted" id="count" style="margin-left:8px"></span>
       </div>
+      <!-- v1.5: over-time / distribution charts pinned to the top of Logons and Network -->
+      <div id="logonChart" class="hide"></div>
+      <div id="netChart" class="hide"></div>
       <!-- v0.14: lateral movement lives with the Logons tab (outbound half of the auth story) -->
       <div id="latWrap" class="hide">
-        <h3>Lateral movement <span class="muted" style="font-weight:400;text-transform:none">- outbound SSH evidence: known_hosts destinations, ~/.ssh/config, ssh/scp/rsync commands in shell histories. CORROB = destination appears in known_hosts AND a typed command.</span></h3>
+        <h3>Lateral movement <span class="muted" style="font-weight:400;text-transform:none">- Outbound SSH evidence: known_hosts destinations, ~/.ssh/config, ssh/scp/rsync commands in shell histories. CORROB = destination appears in known_hosts AND a typed command.</span></h3>
         <div class="scroll" style="max-height:18vh;margin-bottom:8px"><table id="latTbl"></table></div>
       </div>
       <div class="scroll" id="tblScroll"><table id="tbl"></table></div>
@@ -411,7 +426,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.4.1";
+var APP_VERSION = "1.5.0";
 /* v0.9.4 - SQLECmd wrapper: offer to DOWNLOAD instead of hunt for it (operator request):
    - if the wrapper isn't found anywhere, a hand-off now offers to download the latest
      SQLECmd-Wrapper.hta from GitHub into THIS app's folder (browse stays as the offline
@@ -3871,7 +3886,7 @@ function mdClearAll(){ for(var k in MDROP){ if(MDROP.hasOwnProperty(k)){ MDROP[k
 var USERS_SEL={};
 function usersSelSet(){ var k; for(k in USERS_SEL){ if(USERS_SEL.hasOwnProperty(k)) return USERS_SEL; } return null; }
 function renderUsersDropBtn(){ var n=0,k; for(k in USERS_SEL){ if(USERS_SEL.hasOwnProperty(k)) n++; }
-  try{ $("usersDropBtn").innerHTML="accounts: "+(n?(n+" selected"):"all")+" ▾"; }catch(e){} }
+  try{ $("usersDropBtn").innerHTML="Accounts: "+(n?(n+" selected"):"all")+" ▾"; }catch(e){} }
 function populateUsersSel(){
   var el=$("usersDropPanel"); if(!el) return;
   var names=[], i; for(i=0;i<USERS.length;i++) names.push(USERS[i].user);
@@ -4187,22 +4202,24 @@ function setTab(t, quiet){
   showEl("usersFilters", t==="users");                       // v0.14
   showEl("latWrap", t==="logon" && LATERAL.length>0);        // v0.14: lateral movement lives on Logons
   setTblHeading(t);                                          // v1.4: per-tab heading + description
+  showEl("logonChart", t==="logon");                         // v1.5: charts
+  showEl("netChart", t==="net");
   if(!isOv && !isLogs && !isEv && !isPersist && !isApps && !isBrowser){ $("q").value=QUERY; }
   if(!quiet) render();
 }
 /* v1.4: heading + one-line description shown above every table-card tab */
 var TBL_HEADINGS={
-  inv:["UAC inventory","Every key artifact UAC could collect, shown present or absent with size and an open-folder link to the raw file - the coverage map for this capture."],
+  inv:["UAC Inventory","Every key artifact UAC could collect, shown present or absent with size and an open-folder link to the raw file - the coverage map for this capture."],
   proc:["Processes","Running processes from ps, enriched with top / per-pid /proc / lsof and scored - hidden-from-ps, deleted-binary, LD_PRELOAD, memfd, web-shell and masquerade tells. Toggle the tree view for parent/child hierarchy."],
-  net:["Network connections","Sockets from ss cross-checked against /proc/net (hidden-listener detection), scored, with service type, resolved country/ASN and click-to-VirusTotal on public remotes."],
-  users:["User accounts","Every account from /etc/passwd with shell, groups, shadow lock state, SSH-key and shell-history counts, last login and an enabled verdict. Toggle By group for group membership."],
-  logon:["Logon events","Authentication events from auth.log, wtmp/btmp and last/lastb - SSH accepted/failed, sudo, pkexec, PAM sessions, account changes. Lateral-movement evidence sits above; By source IP aggregates for brute-force triage."],
-  ssh:["SSH keys","Every SSH key in the capture: authorized_keys (who can log IN), per-user identity keys (public/private, passphrase state) and host keys - with source restrictions, forced commands and null-passphrase flags."],
-  time:["Filesystem timeline","MAC-times for every file from the TSK bodyfile (modify / access / change / create), scored for temp-path executables, hidden paths and setuid bits. The pivot ±15 min target; narrow with the case window on a large capture."],
-  web:["Web-server access logs","apache2 / nginx / httpd access logs (combined format), scored for initial-access hunting: POSTs to script URIs, traversal and encoded payloads, and tool user-agents."],
-  audit:["Audited records","auditd execve records (with hex-decoded arguments and auid attribution) and USER_AUTH / USER_LOGIN events - the closest Linux gets to process-creation telemetry, present only when the host ran auditd."],
-  actions:["Executed bash commands","The full executed-command record from each user's bash/zsh/sh history - timestamped where the shell recorded times - scored for temp-path exec, decoder/pipe-to-shell one-liners, URL fetches, anti-forensics and elevation."],
-  ioc:["IOC hits","Every line in the capture tree that matched an operator-supplied IOC/keyword term, plus SHA1 matches against on-disk executables (dormant implants). Empty until you load IOC terms."]
+  net:["Network Connections","Sockets from ss cross-checked against /proc/net (hidden-listener detection), scored, with service type, resolved country/ASN and click-to-VirusTotal on public remotes."],
+  users:["User Accounts","Every account from /etc/passwd with shell, groups, shadow lock state, SSH-key and shell-history counts, last login and an enabled verdict. Toggle By group for group membership."],
+  logon:["Logon Events","Authentication events from auth.log, wtmp/btmp and last/lastb - SSH accepted/failed, sudo, pkexec, PAM sessions, account changes. Lateral-movement evidence sits above; By source IP aggregates for brute-force triage."],
+  ssh:["SSH Keys","Every SSH key in the capture: authorized_keys (who can log IN), per-user identity keys (public/private, passphrase state) and host keys - with source restrictions, forced commands and null-passphrase flags."],
+  time:["Filesystem Timeline","MAC-times for every file from the TSK bodyfile (modify / access / change / create), scored for temp-path executables, hidden paths and setuid bits. The pivot ±15 min target; narrow with the case window on a large capture."],
+  web:["Web-Server Access Logs","Apache2 / nginx / httpd access logs (combined format), scored for initial-access hunting: POSTs to script URIs, traversal and encoded payloads, and tool user-agents."],
+  audit:["Audited Records","Auditd execve records (with hex-decoded arguments and auid attribution) and USER_AUTH / USER_LOGIN events - the closest Linux gets to process-creation telemetry, present only when the host ran auditd."],
+  actions:["Executed Bash Commands","The full executed-command record from each user's bash/zsh/sh history - timestamped where the shell recorded times - scored for temp-path exec, decoder/pipe-to-shell one-liners, URL fetches, anti-forensics and elevation."],
+  ioc:["IOC Hits","Every line in the capture tree that matched an operator-supplied IOC/keyword term, plus SHA1 matches against on-disk executables (dormant implants). Empty until you load IOC terms."]
 };
 function setTblHeading(t){
   var el=$("tblHeading"); if(!el) return;
@@ -4344,7 +4361,7 @@ function renderOverview(){
 function cloudInitHtml(){
   if(!CLOUDINIT) return "";
   var c=CLOUDINIT, H=[];
-  H.push('<h3 style="margin-top:14px" title="What the cloud/hypervisor handed this VM at first boot - the provisioning baseline to compare the running host against.">Cloud-init provisioning baseline <span class="muted" style="font-weight:400;text-transform:none">- how this VM was originally provisioned: first boot, datasource, original IP/MAC, and whether user-data scripts ran or SSH keys were injected</span></h3><div class="kvgrid">');
+  H.push('<h3 title="What the cloud/hypervisor handed this VM at first boot (from cloud-init) - the provisioning baseline to compare the running host against.">Provisioning baseline <span class="muted" style="font-weight:400;text-transform:none">- How this VM was originally provisioned (cloud-init): first boot, datasource, original IP/MAC, and whether user-data scripts ran or SSH keys were injected</span></h3><div class="kvgrid">');
   H.push(kvRow("First boot", c.firstBoot));
   if(c.ds) H.push(kvRow("Datasource", c.ds));
   if(c.ip) H.push(kvRow("Provisioned IP", c.ip+(c.mask?("  /  "+c.mask):"")));
@@ -4358,14 +4375,14 @@ function cloudInitHtml(){
 /* v0.14: journalctl --list-boots table (moved from the Logs tab - boot cadence is capture context) */
 function bootsHtml(){
   if(!BOOTS.length) return "";
-  var H=['<h3 style="margin-top:14px">Boot history <span class="muted" style="font-weight:400;text-transform:none">- journalctl --list-boots; &gt;2-day between-boot gaps are flagged in Log integrity</span></h3>'];
+  var H=['<h3 style="margin-top:14px">Boot history <span class="muted" style="font-weight:400;text-transform:none">- Journalctl --list-boots; &gt;2-day between-boot gaps are flagged in Log integrity</span></h3>'];
   H.push('<div class="scroll" style="max-height:16vh"><table><thead><tr>'
     +'<th title="Boot index (0 = current boot, negative = earlier boots)">Idx</th>'
     +'<th title="journald boot id (truncated)">Boot ID</th>'
     +'<th title="First journal entry of that boot (normalized; obeys the host-TZ toggle)">First entry ('+esc(tzLabel())+')</th>'
     +'<th title="Last journal entry of that boot (normalized; obeys the host-TZ toggle)">Last entry ('+esc(tzLabel())+')</th></tr></thead><tbody>');
   for(var i=0;i<BOOTS.length;i++){ var bt=BOOTS[i];
-    H.push('<tr><td class="mono" style="text-align:right">'+esc(bt.idx)+'</td><td class="mono muted">'+esc(bt.id.substring(0,12))+'…</td>'
+    H.push('<tr><td class="mono">'+esc(bt.idx)+'</td><td class="mono muted">'+esc(bt.id.substring(0,12))+'…</td>'
       +'<td class="mono" title="raw: '+esc(bt.first)+'">'+esc(bt.firstEp?fmtTime(bt.firstEp,true):bt.first)+'</td>'
       +'<td class="mono" title="raw: '+esc(bt.last)+'">'+esc(bt.lastEp?fmtTime(bt.lastEp,true):bt.last)+'</td></tr>'); }
   H.push('</tbody></table></div>');
@@ -4375,7 +4392,7 @@ function bootsHtml(){
 function sarSummaryHtml(){
   if(!SARSUM) return "";
   var S=SARSUM, H=[];
-  H.push('<div style="margin-bottom:10px"><h3 title="From sysstat/sar day-files - historical CPU usage. Sustained high user-CPU with no known workload is a classic cryptominer tell.">sysstat / sar CPU summary <span class="muted" style="font-weight:400;text-transform:none">- historical CPU from sar; sustained high %usr can indicate a cryptominer</span></h3>');
+  H.push('<div style="margin-bottom:10px;border-top:1px solid #30363d;padding-top:12px;margin-top:6px"><h3 title="From sysstat/sar day-files - historical CPU usage. Sustained high user-CPU with no known workload is a classic cryptominer tell.">sysstat / sar CPU summary <span class="muted" style="font-weight:400;text-transform:none">- Historical CPU from sar; sustained high %usr can indicate a cryptominer</span></h3>');
   H.push('<div>'
     +'<span title="Number of daily sar files (saNN) found - each is one day of recorded CPU statistics.">'+statCard(nf(S.days),"sar day-files","")+'</span>'
     +'<span title="Total sampling intervals across all day-files (typically one every 10 minutes).">'+statCard(nf(S.intervals),"intervals","")+'</span>'
@@ -4802,6 +4819,7 @@ function populateNetFilters(){   // v0.17: checkbox multiselects with counts
   mdPopulate("netLoc", locs); mdPopulate("netType", types);
 }
 function renderNet(){
+  try{ $("netChart").innerHTML=netChartHtml(); }catch(enc){}   // v1.5
   var pub=false; try{ pub=$("netPubOnly").checked; }catch(enp){}
   populateNetFilters();
   var rows=[]; for(var i=0;i<NET.length;i++){ var r=NET[i];
@@ -4856,7 +4874,57 @@ function populateLogonFilters(){   // v0.17: checkbox multiselects with counts
   mdPopulate("logfUser", us); mdPopulate("logfSrc", ss); mdPopulate("logfResult", rs);
 }
 function keysOf(o){ var a=[],k; for(k in o){ if(o.hasOwnProperty(k)&&k) a.push(k); } return a; }
+/* v1.5: logon activity over time - accepted/session (green) vs failed (red) auth events per day */
+function fmtDayKey(x){ x=String(x); return x.substring(0,4)+"-"+x.substring(4,6)+"-"+x.substring(6,8); }
+function logonChartHtml(){
+  try{
+    var by={}, i, any=false;
+    for(i=0;i<LOGON.length;i++){ var r=LOGON[i]; if(!r.epoch) continue;
+      if(r.result!=="accepted" && r.result!=="failed" && r.result!=="session") continue;
+      var d=logonDay(r.epoch); if(!d) continue;
+      if(!by[d]) by[d]={succ:0, fail:0};
+      if(r.result==="failed") by[d].fail++; else by[d].succ++;
+      any=true; }
+    if(!any) return "";
+    var days=[]; for(var k in by){ if(by.hasOwnProperty(k)) days.push(k); }
+    days.sort();
+    var max=1; for(i=0;i<days.length;i++){ var t=by[days[i]].succ+by[days[i]].fail; if(t>max) max=t; }
+    var H=70, bars=[];
+    for(i=0;i<days.length && i<400;i++){ var b=by[days[i]];
+      var fp=b.fail?Math.max(2,Math.round(b.fail/max*H)):0, sp=b.succ?Math.max(2,Math.round(b.succ/max*H)):0;
+      bars.push('<span class="vbar" title="'+esc(fmtDayKey(days[i]))+': '+b.succ+' success, '+b.fail+' failed">'
+        +'<i style="bottom:0;height:'+fp+'px;background:#f85149"></i>'
+        +'<i style="bottom:'+fp+'px;height:'+sp+'px;background:#3fb950"></i></span>'); }
+    return '<div class="chart"><div class="ct">Logon activity over time</div>'
+      +'<div class="cd">Accepted / session (green) vs failed (red) authentication events per day - a tall red column is a brute-force day. Hover a bar for the counts.</div>'
+      +'<div class="bars">'+bars.join("")+'</div>'
+      +'<div class="lg">'+esc(fmtDayKey(days[0]))+' &rarr; '+esc(fmtDayKey(days[days.length-1]))+' &middot; '+nf(days.length)+' day(s) &middot; <span style="color:#3fb950">■</span> success &nbsp;<span style="color:#f85149">■</span> failed</div></div>';
+  }catch(e){ return ""; }
+}
+/* v1.5: network distribution - ss is a point-in-time snapshot (no per-connection timestamps),
+   so this is a distribution (by remote country / service type / socket state), not a time series */
+function netChartHtml(){
+  try{
+    var cnt={}, i, mode="country", any=false;
+    for(i=0;i<NET.length;i++){ var r=NET[i]; if(!r.peerAddr||ipIsLocal(r.peerAddr)) continue;
+      var g=GEO[r.peerAddr]; if(g&&g.country){ cnt[g.country]=(cnt[g.country]||0)+1; any=true; } }
+    if(!any){ mode="type"; for(i=0;i<NET.length;i++){ var sv=netSvcOf(NET[i]); if(sv){ cnt[sv]=(cnt[sv]||0)+1; any=true; } } }
+    if(!any){ mode="state"; for(i=0;i<NET.length;i++){ var st=NET[i].state; if(st){ cnt[st]=(cnt[st]||0)+1; any=true; } } }
+    if(!any) return "";
+    var arr=[]; for(var k in cnt){ if(cnt.hasOwnProperty(k)) arr.push({k:k, n:cnt[k]}); }
+    arr.sort(function(a,b){ return b.n-a.n; });
+    var max=arr[0].n, rows=[];
+    for(i=0;i<arr.length && i<10;i++){ var w=Math.max(3,Math.round(arr[i].n/max*300));
+      rows.push('<div class="hbar"><span class="hl" title="'+esc(arr[i].k)+'">'+esc(arr[i].k)+'</span>'
+        +'<span class="ht" style="width:'+w+'px"></span><span class="hn">'+nf(arr[i].n)+'</span></div>'); }
+    var label=mode==="country"?"remote country":(mode==="type"?"service type":"socket state");
+    return '<div class="chart"><div class="ct">Connections by '+label+'</div>'
+      +'<div class="cd">Network artifacts are a point-in-time snapshot - ss has no per-connection timestamps, so this is a distribution, not a time series'+(mode!=="country"?" (enable Online Geo/ASN lookups for country grouping)":"")+'.</div>'
+      +rows.join("")+'</div>';
+  }catch(e){ return ""; }
+}
 function renderLogon(){
+  try{ $("logonChart").innerHTML=logonChartHtml(); }catch(elc){}   // v1.5
   renderLateral();   // v0.14: outbound-SSH evidence panel sits above the logon table
   // v0.11: aggregate-by-source-IP view (brute-force triage) - same table chrome, different columns
   var brute=false; try{ brute=$("bruteOnly").checked; }catch(eb){}
@@ -4948,7 +5016,7 @@ function renderLogs(){
   var H=[];
   // v0.15: the cloud-init provisioning baseline moved to the Overview tab (cloudInitHtml)
   // log integrity
-  H.push('<div class="card"><h3 title="Tamper and coverage checks across the logs: utmp record alignment, broken rotation chains, out-of-order timestamps, zero-byte critical logs, journal rotation anomalies and hostname consistency.">Log integrity <span class="muted" style="font-weight:400;text-transform:none">- tamper / rotation / alignment / coverage checks</span></h3>');
+  H.push('<div class="card"><h3 title="Tamper and coverage checks across the logs: utmp record alignment, broken rotation chains, out-of-order timestamps, zero-byte critical logs, journal rotation anomalies and hostname consistency.">Log integrity <span class="muted" style="font-weight:400;text-transform:none">- Tamper / rotation / alignment / coverage checks</span></h3>');
   if(!INTEGRITY.length){ H.push('<div class="ok" style="font-size:12px">No integrity anomalies detected (utmp record alignment, log rotation chain, timestamp ordering, journal coverage, hostname consistency all clean).</div>'); }
   else { H.push('<div class="scroll" style="max-height:26vh"><table><thead><tr><th>Sev</th><th>Check</th><th>Detail</th></tr></thead><tbody>');
     for(var i=0;i<INTEGRITY.length;i++){ var it=INTEGRITY[i];
@@ -4956,7 +5024,7 @@ function renderLogs(){
     H.push('</tbody></table></div>'); }
   H.push('</div>');
   // systemd journal coverage
-  H.push('<div class="card"><h3>systemd journal coverage <span class="muted" style="font-weight:400;text-transform:none">- decoded from journal filenames; a long gap + generation change can mean the journal was vacuumed/cleared</span></h3>');
+  H.push('<div class="card"><h3>systemd journal coverage <span class="muted" style="font-weight:400;text-transform:none">- Decoded from journal filenames; a long gap + generation change can mean the journal was vacuumed/cleared</span></h3>');
   if(!JOURNAL){ H.push('<div class="muted" style="font-size:12px">No systemd journal files in this capture.</div>'); }
   else { var J=JOURNAL;
     H.push('<div>'+statCard(nf(J.sysCount+J.userCount),"journal files","")
@@ -5901,8 +5969,8 @@ function init(){
   $("evto").onchange=function(){ EVTO=dayNum(this.value); render(); };
   $("evMinScore").onchange=function(){ render(); };
   // v0.17: register the multiselect filters (labels drive the button text)
-  mdReg("netLoc","location"); mdReg("netType","type"); mdReg("logfUser","user");
-  mdReg("logfSrc","source"); mdReg("logfResult","result"); mdReg("procSus","suspicion"); mdReg("evKind","kind"); mdReg("actUser","user");
+  mdReg("netLoc","Location"); mdReg("netType","Type"); mdReg("logfUser","User");
+  mdReg("logfSrc","Source"); mdReg("logfResult","Result"); mdReg("procSus","Suspicion"); mdReg("evKind","Kind"); mdReg("actUser","User");
   $("evTz").onclick=function(){ setTz(this.checked); };
   $("evExport").onclick=exportEvents;
   $("evToolOnly").onclick=function(){ render(); };
@@ -6055,6 +6123,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Inventory tab</b> - a map of every key artifact (processes, network, logons, accounts, persistence, system, filesystem, logs, containers) showing present/absent, size, and an <b>open folder</b> link that opens the raw file in Explorer. The Persistence &amp; config inventory on Overview has the same open-folder links; click an artifact name there to view its contents inline.</li>
       <li><b>UI (v0.7):</b> the Processes table has a <b>Name</b> column and a <b>Tree view</b> toggle (collapsible parent/child hierarchy - click ▸/▾ to fold, a row for detail). <b>Logons</b> has User / Source / Result filters and a clickable link to each raw source log. <b>Events</b> has a min-score filter and a kind filter. Long tables keep their <b>header row frozen</b> while scrolling, and <b>Persistence &amp; system findings</b> shows a date/time column.</li>
       <li><b>Resizable columns</b> everywhere - drag the right edge of any column header (it highlights on hover); double-click the edge to reset. Widths persist per view.</li>
+      <li><b>Charts + polish (v1.5):</b> the <b>Logons</b> tab now opens with a <b>logon-activity-over-time</b> chart (accepted/session green vs failed red, per day - a tall red column is a brute-force day), and the <b>Network</b> tab with a <b>connections-by-country</b> distribution (ss is a point-in-time snapshot, so it's a distribution, not a time series; falls back to service type / socket state without geo). Also: Provisioning baseline (cloud-init) moved to the very top of the Overview; a divider above the sar summary; Log Integrity tab moved next to UAC Inventory; every filter label and dropdown is Title-Cased ("Dual-Use Apps", "Notable Events", "Online Geo/ASN lookups", "Location/Type/User/Source/Result/Suspicion/Accounts"); table headings Title-Cased ("Logon Events", "User Accounts", ...); heading descriptions sentence-capitalized; and the boots Idx column left-aligned.</li>
       <li><b>Presentation pass, cont. (v1.4.1):</b> Generate report is green; all Host-TZ toggles read "Host TZ"; the Events "TOOLING only" filter is now "Dual Use Apps"; the Events and Log-Integrity tabs got violet Export buttons; the Events tab gained a heading + description; the Logs tab is renamed "Log Integrity"; the Actions tab sits left of Events; and the sar %usr/%idle columns are left-aligned.</li>
       <li><b>Presentation pass (v1.4):</b> every table tab now shows a <b>heading and one-line description</b> above the grid; report files follow the convention <code>&lt;Hostname&gt; - Full|Filtered UAC Report - YYYYMMDD-HHMMSS</code> (UTC); the tab bar is reordered (Browser by Users, SSH Keys by Logons, Events before Timeline) and <b>Inventory</b> is now <b>UAC Inventory</b>; <b>System Overview</b> sits at the top of the Overview with sar/boots/cloud-init below it; the sar cards and the cloud-init section gained tooltips/descriptions; the Events <b>hide TOOLING</b> toggle became <b>TOOLING only</b> (spot recently installed dual-use tools directly); <b>Export View → CSV</b> and <b>Copy to Clipboard</b> are violet; and toolbar/heading capitalization was tidied up.</li>
       <li><b>Brute-force filter (v1.3):</b> a <b>brute-force only</b> checkbox on <b>Logons</b> and <b>Audit</b>. On Logons it shows the failures and the eventual success from any source IP with 5+ failed attempts (the SPRAY / BRUTEWIN picture), and on the <b>By source IP</b> view it narrows to just those brute sources. On Audit it shows failed <code>USER_AUTH</code>/<code>USER_LOGIN</code> records from a source that failed 5+ times. One click isolates a password-guessing campaign and the account/IP that eventually got in.</li>

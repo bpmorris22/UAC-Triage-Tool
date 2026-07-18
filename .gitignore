@@ -5,3 +5,9 @@ Thumbs.db
 _Processed/
 *.colw.txt
 runinfo.json
+
+# downloaded by the SQLECmd hand-off feature into the app folder - not part of this repo
+SQLECmd-Wrapper.hta
+UAC-Triage-Tool.sqlecmd.txt
+UAC-Triage-Tool.colw.txt
+offline.txt

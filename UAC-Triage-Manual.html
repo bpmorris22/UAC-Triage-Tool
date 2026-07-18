@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Linux UAC Capture Analyzer — Field Manual v1.6</title>
+<title>Linux UAC Capture Analyzer — Field Manual v1.7</title>
 <style>
   :root{color-scheme:dark}
   html{background:#0d1117}
@@ -50,10 +50,10 @@
 <body>
 <div class="wrap">
 
-<h1>Linux UAC Capture Analyzer — Field Manual <small>· covers v1.6 · triage a Unix-like Artifacts Collector (UAC) capture on Windows</small></h1>
+<h1>Linux UAC Capture Analyzer — Field Manual <small>· covers v1.7 · triage a Unix-like Artifacts Collector (UAC) capture on Windows</small></h1>
 <p class="muted">A single-file Windows HTA that turns a <a href="https://github.com/tclahr/uac">UAC</a> collection from a Linux / macOS / *BSD / Solaris / ESXi host into scored, searchable triage views — offline, with no dependencies beyond Windows' built-in <code>tar.exe</code>, PowerShell, and (optionally) WSL. GitHub: <a href="https://github.com/bpmorris22/Linux-UAC-Capture-Analyzer">bpmorris22/Linux-UAC-Capture-Analyzer</a>.</p>
 
-<div class="card new"><b>What changed since the v0.9 manual.</b> The tool was renamed <b>UAC Triage Tool → Linux UAC Capture Analyzer</b> at v1.0 (the file is now <code>Linux-UAC-Analyzer.hta</code>; the <code>_Processed\&lt;host&gt;\UAC</code> output convention and SQLECmd sidecar filenames are unchanged for continuity). Whole new tabs have arrived: <b><a href="#security">Security</a></b> — an automated assessment scored PASS / WARN / FAIL / N-A (attack-chain correlations plus a CIS/NIST-inspired OS and Apache hardening posture); <b><a href="#users">Users</a></b>, <b><a href="#ssh">SSH Keys</a></b>, <b><a href="#actions">Actions</a></b> (the full executed-command record, scored across the attacker playbook), <b><a href="#apache">Apache Web Server</a></b> (config summary + access logs — renamed from "Apache logs"), <b><a href="#audit">Audit</a></b>, and dedicated <b><a href="#apps">Apps</a></b> / <b><a href="#persist">Persistence</a></b> tabs (graduated off the Overview). Cross-cutting: a <b><a href="#nbh">Non-Business Hours</a></b> filter on every time-based tab, a raised display cap with a prominent <b><a href="#rowcap">Maximum Rows Exceeded</a></b> warning, per-tab headings/descriptions, resizable+frozen columns, online geo/ASN enrichment, and over-time charts on Logons and Network. Screenshots below are from the early builds (synthetic demo data) — layouts have gained columns and tabs since, but the anatomy they show still applies. <b>v0.8–v0.9 recap:</b> <a href="#bdb">browser-DB detection + SQLECmd hand-off</a> and the <a href="#profpill">capture-profile pill &amp; recapture warning</a>.</div>
+<div class="card new"><b>What changed since the v0.9 manual.</b> The tool was renamed <b>UAC Triage Tool → Linux UAC Capture Analyzer</b> at v1.0 (the file is now <code>Linux-UAC-Analyzer.hta</code>; the <code>_Processed\&lt;host&gt;\UAC</code> output convention and SQLECmd sidecar filenames are unchanged for continuity). Whole new tabs have arrived: <b><a href="#security">Security</a></b> — an automated assessment scored PASS / WARN / FAIL / N-A (attack-chain correlations plus a CIS/NIST-inspired OS and Apache hardening posture); <b><a href="#users">Users</a></b>, <b><a href="#ssh">SSH Keys</a></b>, <b><a href="#actions">Actions</a></b> (the full executed-command record, scored across the attacker playbook), <b><a href="#apache">Apache Web Server</a></b> (config summary + access logs — renamed from "Apache logs"), <b><a href="#audit">Audit</a></b>, and dedicated <b><a href="#apps">Apps</a></b> / <b><a href="#persist">Persistence</a></b> tabs (graduated off the Overview). Cross-cutting: a <b><a href="#nbh">Non-Business Hours</a></b> filter on every time-based tab, a raised display cap with a prominent <b><a href="#rowcap">Maximum Rows Exceeded</a></b> warning, per-tab headings/descriptions, resizable+frozen columns, online geo/ASN enrichment, and over-time charts on Logons and Network. Screenshots below are from the early builds (synthetic demo data) — layouts have gained columns and tabs since, but the anatomy they show still applies. <b>New in v1.7:</b> the <b><a href="#persist">Persistence</a></b> tab gained <b>RAT / C2 sweeps</b> — system-wide login scripts, SSH-login hooks (<code>sshrc</code>, <code>~/.ssh/rc</code>), run-parts cron dirs, network-event triggers, module-autoload, udev <code>RUN</code>, binfmt, at jobs — plus a <b>C2 tradecraft lens</b> on every command line (reverse-shell/backpipe/encoded-loader patterns, a known-implant name watchlist, and hardcoded callback IPs). <b>v0.8–v0.9 recap:</b> <a href="#bdb">browser-DB detection + SQLECmd hand-off</a> and the <a href="#profpill">capture-profile pill &amp; recapture warning</a>.</div>
 
 <h2 id="toc">Contents</h2>
 <div class="toc">
@@ -296,8 +296,16 @@
 <h3 id="ssh">SSH Keys <span class="vnew">v1.1</span></h3>
 <p>The key material in the capture: <b>authorized_keys</b> (who can log <em>in</em>, with source-restriction and forced-command flags), per-user <b>identity keys</b> (public/private, passphrase state), and <b>host keys</b>. A short key-id (base64 head…tail) lets you match the same key across accounts by eye; a <b>null-passphrase</b> private key, and an <b>unrestricted</b> or <b>forced-command</b> authorized_keys entry, are flagged.</p>
 
-<h3 id="persist">Persistence <span class="vnew">v0.13</span></h3>
-<p>The scored persistence command lines and the config/persistence inventory (formerly on the Overview). A <b>min-score filter</b> (default ≥1; "all incl. benign" surfaces the hundreds of stock cron/systemd lines) decides how much noise to show. Sources: cron, systemd units &amp; timers (system + user), authorized_keys, rc.local, ld.so.preload, motd &amp; APT hooks, modprobe, XDG autostart, shell startup files, and PAM module directories.</p>
+<h3 id="persist">Persistence <span class="vnew">v0.13 · sweeps expanded v1.7</span></h3>
+<p>The scored persistence command lines and the config/persistence inventory (formerly on the Overview). A <b>min-score filter</b> (default ≥1; "all incl. benign" surfaces the hundreds of stock cron/systemd lines) decides how much noise to show. Sources: cron (<span class="vnew">v1.7</span> also the <code>cron.{hourly,daily,weekly,monthly}</code> run-parts dirs &amp; <code>anacrontab</code>), systemd units &amp; timers (system + user), authorized_keys, rc.local (<span class="vnew">v1.7</span> + the RHEL <code>/etc/rc.d/rc.local</code> and <code>/etc/init.d</code> scripts), ld.so.preload, motd &amp; APT hooks, modprobe, XDG autostart, shell startup files, and PAM module directories.</p>
+<p><b>RAT / C2 sweeps <span class="vnew">v1.7</span>.</b> The tab now covers the hiding spots current Linux RAT/C2 write-ups flag that the earlier sweeps missed:</p>
+<ul>
+<li><b>System-wide login execution</b> — <code>/etc/profile</code>, <code>profile.d/*.sh</code>, <code>/etc/bash.bashrc</code>, <code>/etc/zsh/*</code>, <code>/etc/environment</code> (the per-user rc sweep can't see these).</li>
+<li><b>SSH-login hooks</b> — <code>/etc/ssh/sshrc</code> and per-user <code>~/.ssh/rc</code>, which run on <em>every</em> inbound SSH session before the shell — a stealthy, under-triaged trigger. Tag <code>SSH-RC</code>.</li>
+<li><b>Network-event triggers</b> (beacon-on-connectivity, boot-independent) — <code>NetworkManager/dispatcher.d</code>, <code>if-up.d</code>/<code>if-post-up.d</code>/<code>if-down.d</code>, <code>dhclient-exit-hooks.d</code>, <code>ppp/ip-up.d</code>. Tag <code>NET-TRIGGER</code>.</li>
+<li><b>Boot / device autostart</b> — <code>/etc/modules</code> &amp; <code>modules-load.d</code> (kernel-module autoload, <code>MOD-AUTOLOAD</code>), <code>udev</code> rules with <code>RUN+=</code>/<code>PROGRAM=</code> (<code>UDEV-RUN</code>), <code>binfmt_misc</code> handlers (<code>BINFMT</code>), <code>at</code> jobs.</li>
+</ul>
+<p>Package-shipped scripts (stock cron and network hooks) are whitelisted or listed as low-score <em>leads</em>; the content sweep and the C2 lens below elevate a genuinely malicious one. On top of the locations, <b>every persistence command line gets a RAT/C2 tradecraft lens</b> — see <a href="#scoring">Scoring → Persistence</a> — that flags reverse shells, backpipes, encoded loaders, known-implant names, and hardcoded callback IPs wherever they appear.</p>
 
 <h3 id="actions">Actions <span class="vnew">v1.2</span></h3>
 <p>The full <b>executed-command record</b> from each user's bash/zsh/sh history — every line, not just the hostile ones the Persistence tab keeps — <b>timestamped</b> where the shell recorded times (bash <code>HISTTIMEFORMAT</code>, zsh extended history). Each line is <b>scored across the attacker playbook</b> (see <a href="#scoring">Scoring → Actions</a>): recon, credential access, scanners/offensive tools, download→chmod→exec, account &amp; persistence edits, remote copy/SSH, packet capture, kernel modules, web-shell drops, anti-forensics, defence-evasion, elevation. Per-user filter, case-window and host-TZ aware; click a timestamped row to <b>pivot the Timeline ±15 min</b>.</p>
@@ -378,6 +386,12 @@
 <tr><td>pam.d: pam_permit as sufficient / before any real auth module (Debian's trailing pam_permit and gdm-autologin are NOT flagged)</td><td>+3</td><td>PAM-CFG</td></tr>
 <tr><td>pam.d: pam_exec on auth; pam_unix nullok</td><td>+2 / +1</td><td>PAM-CFG</td></tr>
 <tr><td>Container: privileged / docker.sock or / mounted / host namespace / 0.0.0.0 bind / implant path in docker diff</td><td>+3 / +3 / +2 / +1 / +2</td><td>PRIVILEGED, SENS-MOUNT, HOST-NS, BIND-ALL, CTR-IMPLANT</td></tr>
+<tr><td><b>v1.7 RAT/C2 sweeps.</b> SSH-login hook (<code>sshrc</code>, <code>~/.ssh/rc</code>) — udev <code>RUN</code>/binfmt registration — non-stock periodic-cron / network-event script (a lead)</td><td>+2 / +2 / +1</td><td>SSH-RC, UDEV-RUN, BINFMT / CRON-DIR, NET-TRIGGER</td></tr>
+<tr><td>Kernel module set to autoload at boot (<code>/etc/modules</code>, <code>modules-load.d</code>) — a lead</td><td>+1</td><td>MOD-AUTOLOAD</td></tr>
+<tr><td><b>v1.7 C2 tradecraft lens</b> (on <em>any</em> persistence command line): reverse shell (<code>/dev/tcp</code>, <code>nc -e</code>, <code>socat EXEC</code>, scripting connect-back, openssl-wrapped) / <code>mkfifo</code> backpipe</td><td>+3</td><td>REVSHELL / BACKPIPE</td></tr>
+<tr><td>base64/hex-decoded payload piped into a shell</td><td>+2</td><td>ENC-LOADER</td></tr>
+<tr><td>Known implant / RAT / miner / C2 name (xmrig, kinsing, bpfdoor, sliver, mythic, chisel, frpc, meterpreter, …) — an indicator, unmapped</td><td>+3</td><td>IMPLANT</td></tr>
+<tr><td>Hardcoded <b>public</b> callback IP baked into the entry (LAN IPs excluded; geo-tagged) — an indicator, unmapped</td><td>+2</td><td>C2-ADDR</td></tr>
 </table>
 <h3>Actions (executed commands) <span class="vnew">v1.6</span></h3>
 <p>Each shell-history line is scored across the attacker playbook. Outright-hostile signals reach ≥3 on their own; dual-use admin commands score 1–2 so a chained sequence (e.g. <code>scp /etc/passwd root@ip:/tmp/</code> = EXFIL + CRED-ENUM + TMPEXEC) stacks into a red row.</p>
@@ -419,7 +433,12 @@
 <tr><td>History clearing, journal gaps, disabled history</td><td>T1070 / T1562 Impair Defenses</td></tr>
 <tr><td>Cryptomining CPU pattern</td><td>T1496 Resource Hijacking</td></tr>
 <tr><td>pam.d tampering</td><td>T1556.003 Modify Authentication Process</td></tr>
+<tr><td>SSH-login / network-event / binfmt triggers <span class="vnew">v1.7</span></td><td>T1546 Event Triggered Execution</td></tr>
+<tr><td>Periodic-cron dir script <span class="vnew">v1.7</span></td><td>T1053.003 Scheduled Task/Job: Cron</td></tr>
+<tr><td>Kernel-module autoload / udev RUN <span class="vnew">v1.7</span></td><td>T1547.006 / T1547 Boot or Logon Autostart</td></tr>
+<tr><td>Reverse shell / backpipe / encoded loader <span class="vnew">v1.7</span></td><td>T1059.004 Unix Shell / T1140 Deobfuscate</td></tr>
 </table>
+<p class="muted">Consistent with the no-overclaim rule, pure <b>indicators</b> — an IOC hit, a known-implant name (<code>IMPLANT</code>), or a hardcoded callback address (<code>C2-ADDR</code>) — are deliberately <b>not</b> mapped to a technique; only demonstrated behaviour is.</p>
 
 <h2 id="window">18. Case window</h2>
 <p><code>/from</code> and <code>/to</code> (or the date boxes on Timeline/Logons/Events) set a UTC day window that <b>filters</b> the Timeline (mtime/ctime/crtime), Logons, Events and package activity — it is recorded in <code>runinfo.json</code> and <b>never changes scores</b>. On MFT-scale bodyfiles the window is applied at parse time, so rows beyond the 50k cap become visible when the window narrows.</p>

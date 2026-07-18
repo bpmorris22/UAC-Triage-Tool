@@ -308,7 +308,7 @@
           <option value="0">all (incl. benign)</option>
         </select>
         <label style="font-size:12px;margin-left:10px" title="Render times in the collector's host time zone instead of UTC."><input type="checkbox" id="tzPersist"> Host TZ</label>
-        <span class="muted" style="font-size:11px;margin-left:8px">cron / systemd units &amp; timers / authorized_keys / rc.local / ld.so.preload / accounts / suid &amp; capability sweeps / SSH keys / histories &amp; startup files / motd &amp; apt hooks / modprobe / XDG autostart / PAM modules</span>
+        <span class="muted" style="font-size:11px;margin-left:8px">cron (+ hourly/daily/weekly/monthly &amp; anacron) / systemd units &amp; timers / authorized_keys / rc.local (+RHEL) &amp; init.d / ld.so.preload / accounts / suid &amp; capability sweeps / SSH keys / histories &amp; startup files / system profile.d &amp; bash.bashrc / SSH-login rc &amp; sshrc / network-event hooks (dispatcher.d, if-up.d, dhclient, ppp) / modprobe &amp; module autoload / udev RUN / binfmt_misc / at jobs / motd &amp; apt hooks / XDG autostart / PAM modules &mdash; every command line also gets a RAT/C2 lens (reverse-shell/backpipe/encoded-loader patterns, known-implant names, hardcoded callback IPs)</span>
       </div>
       <div id="persFindWrap" class="hide">
         <div class="scroll" style="max-height:42vh"><table id="pfTbl"></table></div>
@@ -476,7 +476,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.6.0";
+var APP_VERSION = "1.7.0";
 /* v0.9.4 - SQLECmd wrapper: offer to DOWNLOAD instead of hunt for it (operator request):
    - if the wrapper isn't found anywhere, a hand-off now offers to download the latest
      SQLECmd-Wrapper.hta from GitHub into THIS app's folder (browse stays as the offline
@@ -2274,7 +2274,98 @@ function deepParsePersistence(root){
           {score:3, tag:"PAM-MOD", reason:"a shared object in a PAM directory not named pam_*.so - PAM-backdoor pattern (e.g. Plague 2025); verify it against the package manager"});
       else if(IOCS.length && iocHit(lc(sn))) pushPersFind(pamDirs[i].replace("[root]",""), "PAM module matching IOC", sn);
     } }catch(es3){} }
+  sweepExtraPersistence(root);   // v1.7: additional RAT / C2 persistence sweeps
 }
+/* ============ v1.7 - additional RAT / C2 persistence sweeps ============
+   Locations current Linux hunting write-ups flag that the v0.11 sweeps missed: system-wide login
+   scripts, SSH-login hooks, run-parts periodic-cron dirs, network-event triggers, boot/device
+   autostart, and legacy init. Files with lots of legit content (profile, init.d, anacrontab) are
+   swept for HOSTILE lines only (HIST_PREFILTER); high-signal locations flag the entry itself. The
+   command-line then gets the C2/implant lens in rescorePersFind. */
+function sweepExtraPersistence(root){
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), i, k;
+  function readAt(rel){ return readTextCapped(jp(root, rel)); }
+  function eachFile(rel, cb){ var d=jp(root, rel); if(!fso.FolderExists(d)) return;
+    try{ var e=new Enumerator(fso.GetFolder(d).Files); for(;!e.atEnd();e.moveNext()) cb(e.item()); }catch(er){} }
+  // sweepLines: base=null -> push only HIST_PREFILTER-matching (hostile) lines; base set -> push every non-comment line with that base
+  function sweepLines(src, kind, text, base){ if(!text) return; var a=String(text).split("\n");
+    for(var j=0;j<a.length;j++){ var ln=trimStr(a[j]); if(ln===""||ln.charAt(0)==="#") continue;
+      if(base) pushPersFind(src, kind, ln, base); else if(HIST_PREFILTER.test(ln)) pushPersFind(src, kind, ln); } }
+  var uhomes=userHomes(root), u;
+
+  // --- system-wide login / shell-init execution (the per-user rc sweep misses these) ---
+  sweepLines("/etc/profile", "system shell-init line", readAt("[root]/etc/profile"));
+  sweepLines("/etc/bash.bashrc", "system shell-init line", readAt("[root]/etc/bash.bashrc"));
+  sweepLines("/etc/zsh/zshenv", "system shell-init line", readAt("[root]/etc/zsh/zshenv"));
+  sweepLines("/etc/zsh/zshrc", "system shell-init line", readAt("[root]/etc/zsh/zshrc"));
+  sweepLines("/etc/environment", "system environment line", readAt("[root]/etc/environment"));
+  eachFile("[root]/etc/profile.d", function(f){ if(!/\.(sh|csh)$/i.test(f.Name+"")) return;
+    sweepLines("profile.d/"+f.Name, "profile.d login script (all users)", readTextFast(f)); });
+
+  // --- SSH-login hooks: run on every inbound SSH session BEFORE the shell ---
+  var sshrc=readAt("[root]/etc/ssh/sshrc");
+  if(sshrc) sweepLines("/etc/ssh/sshrc", "runs on every SSH login (before the shell)", sshrc,
+    {score:2, tag:"SSH-RC", reason:"/etc/ssh/sshrc executes on every inbound SSH session before the user shell - a stealthy login trigger"});
+  var rcHits=findUserFiles(root, ".ssh/rc");
+  for(i=0;i<rcHits.length;i++){ sweepLines("~"+userLabel(rcHits[i])+"/.ssh/rc", "runs on this user's SSH logins", readTextCapped(rcHits[i]),
+    {score:2, tag:"SSH-RC", reason:"~/.ssh/rc executes on every SSH login for this account before the shell"}); }
+
+  // --- run-parts periodic cron dirs + anacron (the crontab/cron.d sweep misses these) ---
+  // stock/package-shipped names skipped; the rest are listed as leads (score 1) - the content sweep
+  // + C2/implant lens below elevates a genuinely malicious periodic script above the noise floor
+  var STOCK_CRON=/^(0anacron|anacron|apt-compat|apt|dpkg|logrotate|man-db|mlocate|plocate|update-notifier-common|update-notifier|apport|popularity-contest|bsdmainutils|passwd|sysstat|debsums|aptitude|cracklib-runtime|google-chrome|e2scrub_all|fstrim|00logwatch|certbot|ntp|chrony|unattended-upgrade|exim4-base|samba|spamassassin|apache2|mdadm|aide|rkhunter|chkrootkit|ubuntu-advantage-tools|etckeeper|bsdutils|dpkg-cleanup|sa-update|logwatch)$/i;
+  var cronDirs=["cron.hourly","cron.daily","cron.weekly","cron.monthly"];
+  for(k=0;k<cronDirs.length;k++){ (function(cdn){ eachFile("[root]/etc/"+cdn, function(f){ var nm=f.Name+"";
+    if(STOCK_CRON.test(nm)||/\.(dpkg-\w+|placeholder|swp|bak|old)$/i.test(nm)) return;
+    pushPersFind(cdn+"/"+nm, "non-stock periodic cron script (root)", nm,
+      {score:1, tag:"CRON-DIR", reason:"non-stock script in /etc/"+cdn+" - run-parts executes it as root on a schedule; verify it is expected"});
+    sweepLines(cdn+"/"+nm, "cron script line", readTextFast(f)); }); })(cronDirs[k]); }
+  sweepLines("/etc/anacrontab", "anacron job line", readAt("[root]/etc/anacrontab"));
+
+  // --- network-event triggers (beacon-on-connectivity; boot-independent) ---
+  var netTrig=[["[root]/etc/NetworkManager/dispatcher.d","dispatcher.d","NetworkManager dispatcher (network up/down)"],
+               ["[root]/etc/network/if-up.d","if-up.d","ifupdown if-up hook (interface comes up)"],
+               ["[root]/etc/network/if-post-up.d","if-post-up.d","ifupdown if-post-up hook"],
+               ["[root]/etc/network/if-down.d","if-down.d","ifupdown if-down hook"],
+               ["[root]/etc/dhcp/dhclient-exit-hooks.d","dhclient-exit-hooks.d","dhclient exit hook (DHCP lease events)"],
+               ["[root]/etc/ppp/ip-up.d","ppp/ip-up.d","ppp ip-up hook (PPP link comes up)"]];
+  var STOCK_NET=/^(00-netreport|000ifupdown|00-|01ifupdown|0ntpdate|ethtool|mtu|openssh-server|avahi-daemon|avahi-autoipd|ntpdate|ntp|resolved|resolvconf|upstart|wpasupplicant|wpa_action|hookhelpers|debug|samba|chrony|z-final|zzz-|README|ubuntu-fan|bridge|timesyncd|systemd-timesyncd|cloud-init|isc-dhcp|network-manager|rfkill|openvpn|postfix|\.placeholder)/i;
+  for(k=0;k<netTrig.length;k++){ (function(nt){ eachFile(nt[0], function(f){ var nm=f.Name+""; if(STOCK_NET.test(nm)) return;
+    pushPersFind(nt[1]+"/"+nm, nt[2], nm,
+      {score:1, tag:"NET-TRIGGER", reason:"non-stock "+nt[2]+" - runs a command on a network event (a common C2 beacon trigger); verify it is expected"});
+    sweepLines(nt[1]+"/"+nm, "network-trigger script line", readTextFast(f)); }); })(netTrig[k]); }
+
+  // --- boot / device autostart ---
+  sweepModuleAutoload("/etc/modules", readAt("[root]/etc/modules"));
+  eachFile("[root]/etc/modules-load.d", function(f){ if(/\.conf$/i.test(f.Name+"")) sweepModuleAutoload("modules-load.d/"+f.Name, readTextFast(f)); });
+  eachFile("[root]/etc/udev/rules.d", function(f){ if(/\.rules$/i.test(f.Name+"")) sweepUdevRules("udev/"+f.Name, readTextFast(f)); });
+
+  // --- Tier 2: legacy init, at jobs, binfmt_misc ---
+  sweepLines("/etc/rc.d/rc.local", "rc.local line (RHEL path)", readAt("[root]/etc/rc.d/rc.local"));
+  eachFile("[root]/etc/init.d", function(f){ var nm=f.Name+""; if(/^(README|skeleton|rc|rcS)$/i.test(nm)) return;
+    sweepLines("init.d/"+nm, "init.d script line", readTextFast(f)); });
+  eachFile("[root]/var/spool/at", function(f){ var nm=f.Name+""; if(!/^[a-zA-Z]/.test(nm)) return; sweepLines("at-job("+nm+")", "at scheduled job", readTextFast(f)); });
+  eachFile("[root]/var/spool/cron/atjobs", function(f){ sweepLines("atjob("+f.Name+")", "at scheduled job", readTextFast(f)); });
+  eachFile("[root]/etc/binfmt.d", function(f){ if(/\.conf$/i.test(f.Name+"")) sweepBinfmt("binfmt.d/"+f.Name, readTextFast(f)); });
+}
+function sweepModuleAutoload(src, text){ if(!text) return; var a=String(text).split("\n");
+  for(var j=0;j<a.length;j++){ var m=trimStr(a[j]); if(m===""||m.charAt(0)==="#") continue;
+    m=firstToken(m.replace(/\s+#.*$/,"")); if(!m) continue;
+    pushPersFind(src, "kernel module autoloaded at boot", m,
+      {score:1, tag:"MOD-AUTOLOAD", reason:"module '"+m+"' loads automatically at boot - verify it is a legitimate module (pairs with the LKM-rootkit name check on the Log Integrity tab)"}); } }
+function sweepUdevRules(src, text){ if(!text) return; var a=String(text).split("\n");
+  for(var j=0;j<a.length;j++){ var ln=trimStr(a[j]); if(ln===""||ln.charAt(0)==="#") continue;
+    var m=ln.match(/(RUN\+?=|PROGRAM=)\s*"?([^"\r\n]+?)"?\s*(,|$)/i); if(!m) continue;
+    var cmd=trimStr(m[2]); if(cmd==="") continue;
+    if(/^\/(lib|usr\/lib)\/udev\//.test(cmd) || /^string_escape/.test(cmd) || /^(kmod|systemd|snap)\b/.test(cmd)) continue;   // stock udev helpers
+    pushPersFind(src, "udev rule runs a command on a device event", cmd,
+      {score:2, tag:"UDEV-RUN", reason:"udev "+m[1].replace(/[+=]/g,"")+" executes '"+trunc(cmd,60)+"' on a device/boot event - a boot-persistence vector"}); } }
+function sweepBinfmt(src, text){ if(!text) return; var a=String(text).split("\n");
+  for(var j=0;j<a.length;j++){ var ln=trimStr(a[j]); if(ln===""||ln.charAt(0)==="#"||ln.charAt(0)===";") continue;
+    var parts=ln.split(":"); var interp=parts.length>=5?trimStr(parts[4]):"";
+    if(interp && !/^\/(usr\/)?(bin|sbin|lib|libexec)/.test(interp))
+      pushPersFind(src, "binfmt_misc interpreter registration", ln,
+        {score:2, tag:"BINFMT", reason:"binfmt_misc registers interpreter '"+trunc(interp,50)+"' outside standard paths - runs on a magic-byte match (arbitrary-exec proxy)"}); } }
 function userLabel(p){ p=String(p).replace(/\\/g,"/"); var m=p.match(/\[root\]\/(?:home\/([^\/]+)|(root))\//i); return m?(m[1]||m[2]):baseName(parentDir(parentDir(p))); }
 function scanUnits(root, rel){ scanUnitsAbs(jp(root,rel), rel.replace("[root]","")); }
 function scanUnitsAbs(dir, label){
@@ -3235,7 +3326,17 @@ var MITRE={
   "EXFIL":["T1048","Exfiltration Over Alternative Protocol (remote copy)"],
   "SNIFF":["T1040","Network Sniffing"],
   "KMOD":["T1547.006","Boot/Logon Autostart: Kernel Modules"],
-  "NET-SERVE":["T1105","Ingress Tool Transfer: ad-hoc HTTP staging server"]
+  "NET-SERVE":["T1105","Ingress Tool Transfer: ad-hoc HTTP staging server"],
+  /* v1.7: RAT/C2 persistence sweeps + tradecraft (IMPLANT and C2-ADDR are indicators, left unmapped) */
+  "SSH-RC":["T1546","Event Triggered Execution: SSH login script (~/.ssh/rc, sshrc)"],
+  "CRON-DIR":["T1053.003","Scheduled Task/Job: cron.hourly/daily/weekly/monthly"],
+  "NET-TRIGGER":["T1546","Event Triggered Execution: network-event script"],
+  "MOD-AUTOLOAD":["T1547.006","Boot/Logon Autostart: kernel module autoload"],
+  "UDEV-RUN":["T1547","Boot/Logon Autostart: udev rule RUN"],
+  "BINFMT":["T1546","Event Triggered Execution: binfmt_misc handler"],
+  "REVSHELL":["T1059.004","Command & Scripting Interpreter: reverse shell"],
+  "BACKPIPE":["T1059.004","Unix Shell: named-pipe backpipe reverse shell"],
+  "ENC-LOADER":["T1140","Deobfuscate/Decode Files or Information"]
 };
 /* distinct techniques for a set of tags: [{id,name}] */
 function techsForTags(tags){ var seen={}, out=[]; for(var i=0;i<tags.length;i++){ var m=MITRE[tags[i]];
@@ -3682,6 +3783,32 @@ function rescoreAll(){
     if(r.deep){ for(var dc=0;dc<r.deep.length;dc++){ var cf=r.deep[dc]; r.score+=cf.s; r.tags.push(cf.tag); r.reasons.push(cf.reason); } } }
   buildEvents();   // v0.6: rebuild the unified timeline once scores are final
 }
+/* v1.7: known Linux implant / RAT / C2 framework / coin-miner names, matched anywhere in a
+   persistence command line. A NAME MATCH is an indicator (like an IOC hit), not a technique - so
+   IMPLANT is deliberately NOT mapped to ATT&CK, mirroring the v0.10 no-overclaim doctrine. */
+var IMPLANT_NAMES=["xmrig","kinsing","kdevtmpfsi","kthreaddi","tsunami","kaiten","gafgyt","mirai","bpfdoor",
+  "symbiote","hiddenwasp","orbit","pumakit","reptile","diamorphine","sutersu","syslogk","drovorub","rekoobe",
+  "ebury","winnti","sliver","mythic","havoc","merlin","covenant","empire","poshc2","chisel","ligolo","gost",
+  "frpc","frps","gs-netcat","gsocket","meterpreter","cobaltstrike","pnscan","masscan","zmap","teamtnt",
+  "cpuminer","minerd","xmr-stak","phpguard","redtail","perfcc","dnscat","icmpsh","tshd","prism"];
+function implantHit(s){ var n=lc(s); for(var i=0;i<IMPLANT_NAMES.length;i++){ if(n.indexOf(IMPLANT_NAMES[i])>=0) return IMPLANT_NAMES[i]; } return ""; }
+/* v1.7: reverse-shell / backpipe / encoded-loader C2 tradecraft in a persistence command line.
+   Returns [tag, score, reason] triples (deduped against already-present tags by the caller). */
+function c2Patterns(cmd){ var c=lc(cmd), out=[];
+  if(/\/dev\/tcp\/[0-9a-z.\-]+\/\d+/.test(c)) out.push(["REVSHELL",3,"bash /dev/tcp reverse shell (writes to a raw TCP socket)"]);
+  if(/mkfifo\b[\s\S]*\b(nc|ncat|sh|bash)\b/.test(c) || /mknod\s+\S+\s+p\b/.test(c)) out.push(["BACKPIPE",3,"named-pipe (mkfifo/mknod) backpipe reverse shell"]);
+  if(/(^|\s)(nc|ncat)\b[^|;&]*\s-\w*e\w*\s/.test(c) || /\bsocat\b[\s\S]*exec:/.test(c)) out.push(["REVSHELL",3,"nc/socat spawning a shell (-e / EXEC:)"]);
+  if(/(python[0-9.]*|perl|ruby|php|lua|node)\b[\s\S]*socket[\s\S]*(connect|sock_stream)/.test(c) || /perl\s+-e[\s\S]*socket/.test(c)) out.push(["REVSHELL",3,"scripting-language connect-back reverse shell"]);
+  if(/\bopenssl\s+s_client\b[\s\S]*-connect[\s\S]*\|\s*(ba|z)?sh/.test(c)) out.push(["REVSHELL",3,"openssl-wrapped reverse shell (TLS-encrypted C2)"]);
+  if(/(base64\s+(-d|--decode)|xxd\s+-r|base32\s+-d)\b[\s\S]*\|\s*(ba|z)?sh/.test(c) || /echo\s+[a-z0-9+/=]{40,}[\s\S]*\|\s*base64\s+-d/.test(c)) out.push(["ENC-LOADER",2,"base64/hex-decoded payload piped into a shell"]);
+  if(/\b(setsid|nohup|disown)\b[\s\S]*(\/dev\/tcp|\bnc\b|\bncat\b|\bsocat\b|python|perl)/.test(c)) out.push(["REVSHELL",2,"detached (setsid/nohup/disown) network process - beacon backgrounding"]);
+  return out; }
+/* v1.7: pull the first hardcoded callback endpoint (dev/tcp IP:port, or a bare IPv4[:port]) out of
+   a persistence command line so a baked-in C2 address becomes a visible, geo-taggable finding. */
+function extractC2Addr(cmd){ var s=String(cmd), m;
+  m=s.match(/\/dev\/tcp\/(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,5})/); if(m) return {ip:m[1], port:m[2], raw:m[1]+":"+m[2]};
+  m=s.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::(\d{1,5}))?/); if(m) return {ip:m[1], port:(m[2]||""), raw:m[1]+(m[2]?(":"+m[2]):"")};
+  return null; }
 function rescorePersFind(r){
   r.tags=[]; r.reasons=[]; r.score=0;
   if(r.base){ r.score+=r.base.score; if(r.base.tag) r.tags.push(r.base.tag); if(r.base.reason) r.reasons.push(r.base.reason); }
@@ -3693,6 +3820,13 @@ function rescorePersFind(r){
   if(isShellCmd(r.cmd)){ r.score+=2; r.tags.push("SHELLCMD"); r.reasons.push("interactive/decoder shell pattern"); }
   else if(/\|\s*(ba|z)?sh\b/.test(lc(r.cmd))){ r.score+=2; r.tags.push("PIPE-SH"); r.reasons.push("pipes streamed content into a shell"); }
   if(/\b(curl|wget)\b/.test(lc(r.cmd)) && /https?:\/\//.test(lc(r.cmd))){ r.score+=1; r.tags.push("NET-FETCH"); r.reasons.push("fetches from a URL"); }
+  // v1.7: RAT / C2 tradecraft lens - applies to every persistence command line, wherever found
+  var impl=implantHit(r.blob);
+  if(impl){ r.score+=3; r.tags.push("IMPLANT"); r.reasons.push("references a known implant/RAT/miner/C2 name: "+impl); }
+  var c2h=c2Patterns(r.cmd);
+  for(var ci=0;ci<c2h.length;ci++){ if(!hasTag(r,c2h[ci][0])){ r.score+=c2h[ci][1]; r.tags.push(c2h[ci][0]); r.reasons.push(c2h[ci][2]); } }
+  var addr=extractC2Addr(r.cmd); r.addr=(addr && !ipIsLocal(addr.ip))?addr.ip:"";
+  if(r.addr && !hasTag(r,"C2-ADDR")){ r.score+=2; r.tags.push("C2-ADDR"); r.reasons.push("hardcoded public callback address "+addr.raw+(geoTip(r.addr)?(" ["+geoTip(r.addr)+"]"):"")); }
 }
 function firstToken(s){ s=trimStr(String(s||"")); var sp=s.indexOf(" "); return sp>=0?s.substring(0,sp):s; }
 function isShellCmd(cmd){ var c=lc(cmd);
@@ -4117,6 +4251,7 @@ function collectPublicIps(){
   for(i=0;i<NET.length;i++) add(NET[i].peerAddr);
   for(i=0;i<WEBLOG.length;i++) add(WEBLOG[i].ip);
   for(i=0;i<AUDITX.length;i++) add(AUDITX[i].ip);
+  for(i=0;i<PERSFIND.length;i++) add(PERSFIND[i].addr);   // v1.7: hardcoded C2 callbacks in persistence entries
   return out;
 }
 function maybeEnrichGeo(){
@@ -6820,7 +6955,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Logons</b> (auth.log/secure - <b>ISO-8601 and classic syslog timestamps</b> - plus wtmp/btmp/lastlog binaries decoded directly, and last/lastb text). Events: SSH accepted/failed, <b>sudo</b>, <b>pkexec</b> (polkit privesc), <b>pam sessions</b> (root-cron noise suppressed), <b>account changes</b> (useradd/passwd), su, and per-account <b>lastlog</b>. Scores: IOC (+3), public-IP source (+2), failed auth (+1), ≥5 failures from one IP i.e. brute/spray (+2), accepted-after-brute (+3), root from public IP (+1), <b>service account with an interactive login</b> (+3), <b>new account with a login shell</b> (+4), privesc running a temp/shell/hidden command (+2), account change (+2).</li>
       <li><b>Timeline</b> - IOC path hit (+3), executable under a temp path (+1), hidden component (+1), setuid/setgid (+1).</li>
       <li><b>Actions</b> (v1.6) - every history line is scored across the attacker playbook. Hostile-on-their-own (3+): reverse-shell/decoder one-liners (nc, socat, sh -i, base64 -d, python -c, /dev/tcp), /etc/shadow access, scanners (nmap, masscan, ...), offensive tools (hydra, sqlmap, linpeas, chisel, ...), account manipulation (useradd/usermod/visudo), authorized_keys appends, web-root script drops, anti-forensics (history -c, shred, log wipes, timestomp), setuid chmod. Breadcrumbs (1-2) that stack into red rows when chained: recon (whoami, id, uname, ps, netstat, ip a), /etc/passwd &amp; sudoers &amp; SSH-key reads, URL fetches (+1 more for raw-IP/explicit-port or script payloads), chmod +x, sudo -l / SUID hunting, remote copy (scp/rsync), outbound ssh, tcpdump, kernel modules, cron/rc-file edits, dual-use tool installs, temp-path references. Hover any tag for the exact reasons.</li>
-      <li><b>Persistence &amp; system findings</b> (Overview) - command lines pulled from cron / systemd <code>ExecStart=</code> / authorized_keys forced-commands / rc.local, scored with the process heuristics (IOC, temp path, shell one-liner, pipe-to-shell, URL fetch); a non-empty <code>ld.so.preload</code> is flagged (+3). v0.5 adds: <b>systemd timers</b> (list-timers), <b>account findings</b> (extra UID-0 +3, service account with a shell +2, docker-group members +1), <b>suid/getcap/world-writable/hidden-file sweeps</b> (+2, stock-system entries whitelisted), UAC's <b>null-passphrase SSH private keys</b> (+2), and <b>shell-history</b> one-liners incl. anti-forensics (history -c / shred, +2).</li>
+      <li><b>Persistence &amp; system findings</b> (Overview) - command lines pulled from cron / systemd <code>ExecStart=</code> / authorized_keys forced-commands / rc.local, scored with the process heuristics (IOC, temp path, shell one-liner, pipe-to-shell, URL fetch); a non-empty <code>ld.so.preload</code> is flagged (+3). v0.5 adds: <b>systemd timers</b> (list-timers), <b>account findings</b> (extra UID-0 +3, service account with a shell +2, docker-group members +1), <b>suid/getcap/world-writable/hidden-file sweeps</b> (+2, stock-system entries whitelisted), UAC's <b>null-passphrase SSH private keys</b> (+2), and <b>shell-history</b> one-liners incl. anti-forensics (history -c / shred, +2). v1.7 adds the <b>RAT/C2 sweeps</b> (system profile.d / SSH-login rc &amp; sshrc / periodic-cron dirs / network-event hooks / module-autoload / udev RUN / binfmt / init.d / at jobs) and a <b>C2 tradecraft lens</b> on every command line: reverse-shell &amp; backpipe patterns (<b>REVSHELL</b>/<b>BACKPIPE</b> +3), encoded loaders (<b>ENC-LOADER</b> +2), a known-implant/C2 name watchlist (<b>IMPLANT</b> +3), and hardcoded public callback IPs (<b>C2-ADDR</b> +2, geo-tagged).</li>
       <li><b>IOC hits</b> - a tree-wide line sweep of every texty file &lt; 5 MB against your IOC list (also written to <code>ioc_hits.csv</code>), <em>plus</em> SHA1-shaped IOC terms matched against <code>hash_executables</code> to catch <b>dormant</b> on-disk implants that aren't running.</li>
     </ul>
     <h3>Also parsed</h3>
@@ -6838,6 +6973,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Inventory tab</b> - a map of every key artifact (processes, network, logons, accounts, persistence, system, filesystem, logs, containers) showing present/absent, size, and an <b>open folder</b> link that opens the raw file in Explorer. The Persistence &amp; config inventory on Overview has the same open-folder links; click an artifact name there to view its contents inline.</li>
       <li><b>UI (v0.7):</b> the Processes table has a <b>Name</b> column and a <b>Tree view</b> toggle (collapsible parent/child hierarchy - click ▸/▾ to fold, a row for detail). <b>Logons</b> has User / Source / Result filters and a clickable link to each raw source log. <b>Events</b> has a min-score filter and a kind filter. Long tables keep their <b>header row frozen</b> while scrolling, and <b>Persistence &amp; system findings</b> shows a date/time column.</li>
       <li><b>Resizable columns</b> everywhere - drag the right edge of any column header (it highlights on hover); double-click the edge to reset. Widths persist per view.</li>
+      <li><b>RAT / C2 persistence sweeps (v1.7.0):</b> the <b>Persistence</b> tab gained the hiding spots current Linux RAT/C2 write-ups flag that the earlier sweeps missed. <b>System-wide login execution</b>: <code>/etc/profile</code>, <code>/etc/profile.d/*.sh</code>, <code>/etc/bash.bashrc</code>, <code>/etc/zsh/*</code>, <code>/etc/environment</code> (the per-user rc sweep couldn't see these). <b>SSH-login hooks</b>: <code>/etc/ssh/sshrc</code> and per-user <code>~/.ssh/rc</code> - run on <em>every</em> inbound SSH session before the shell (a favourite stealthy trigger). <b>run-parts periodic cron</b>: <code>/etc/cron.{hourly,daily,weekly,monthly}</code> (non-stock scripts) + <code>/etc/anacrontab</code>. <b>Network-event triggers</b> (beacon-on-connectivity, boot-independent): <code>NetworkManager/dispatcher.d</code>, <code>if-up.d/if-post-up.d/if-down.d</code>, <code>dhclient-exit-hooks.d</code>, <code>ppp/ip-up.d</code>. <b>Boot/device autostart</b>: <code>/etc/modules</code> &amp; <code>modules-load.d</code> (kernel-module autoload), <code>udev</code> rules with <code>RUN+=</code>/<code>PROGRAM=</code>, <code>binfmt_misc</code> handlers. <b>Legacy/other</b>: <code>/etc/rc.d/rc.local</code> (RHEL), <code>/etc/init.d</code> scripts, <code>at</code> jobs. On top of the locations, <b>every persistence command line now gets a RAT/C2 tradecraft lens</b>: reverse-shell / <code>mkfifo</code> backpipe / <code>nc -e</code> / <code>socat EXEC</code> / scripting-language connect-backs / openssl-wrapped shells (<b>REVSHELL</b>/<b>BACKPIPE</b> +3), base64/hex payloads piped to a shell (<b>ENC-LOADER</b> +2), a <b>known-implant/RAT/miner/C2 name watchlist</b> (xmrig, kinsing, bpfdoor, sliver, mythic, chisel, frpc, meterpreter, … → <b>IMPLANT</b> +3), and <b>hardcoded public callback IPs</b> baked into a cron job or unit (<b>C2-ADDR</b> +2, geo-tagged). New persistence tags carry ATT&amp;CK mappings; IMPLANT and C2-ADDR are treated as indicators (unmapped), consistent with the no-overclaim doctrine.</li>
       <li><b>Security tab (v1.6.0):</b> a new <b>Security</b> tab runs an automated assessment over everything already parsed - no re-reading, computed fresh each view. Two halves: <b>compromise-indicator correlations</b> that join data across tabs (brute-force that <em>succeeded</em>, interactive/root logins from public IPs or outside business hours, reverse-shell/scanner/offensive-tool execution, the download→chmod+x chain, anti-forensics, account creation from a shell, persistence files modified <em>after</em> the first suspicious logon, data staging/exfil, an SSH key authorized on multiple accounts, null-passphrase private keys, timestomp candidates, logins from multiple countries), and a <b>hardening-posture checklist</b> (sshd root-login / password-auth / empty-passwords, PAM auth-stack weaknesses, extra UID-0 and duplicate-UID accounts, blank-password accounts, password aging (login.defs), service accounts with shells, sudoers NOPASSWD grants, SSH extras (X11Forwarding / MaxAuthTries / PermitUserEnvironment), privileged/host-namespace containers, auditd presence, <b>firewall enabled/disabled</b> (ufw status / ufw.conf / firewalld) plus the ruleset-vs-0.0.0.0-listeners check, <b>non-standard listening services</b> on externally-reachable interfaces (the "why is velociraptor on 8000" check), SELinux/AppArmor state, kernel-hardening sysctls (ASLR, fs.suid_dumpable, SYN cookies, ip_forward-vs-containers), /tmp noexec+nosuid, NTP clock sync (evidence integrity), patch recency, non-baseline SUID/world-writable/capabilities, EOL distro, docker/sudo/wheel membership) - retitled <b>OS Hardening Posture</b> - and a third table, <b>Apache Hardening Posture</b>: CIS Apache 2.4-inspired checks over the ENABLED configuration in /etc/apache2 | /etc/httpd (ServerTokens/ServerSignature, TraceEnable, run-as user, directory listing, mod_status exposure, risky modules incl. WebDAV/CGI/autoindex, TLS presence + deprecated protocols, AllowOverride All, logging). The <b>Apache logs</b> tab is renamed <b>Apache Web Server</b> and opens with an <b>Apache Configuration</b> section - the key effective directives with at-a-glance review chips - above the access logs; the HTML report mirrors both. Every check reads <b>PASS / WARN / FAIL</b>, or <b>N/A</b> when the source artifact wasn't collected (so a logs-only or non-root capture never shows a false all-clear); a banner rolls up the counts, rows sort worst-first, clicking a finding pivots the Timeline or jumps to the source tab, and it exports to CSV and into the HTML report. Findings are heuristic leads to confirm, not verdicts.</li>
       <li><b>Actions scoring overhaul + Logons subheadings + package Action filter (v1.6.0):</b> the <b>Actions</b> tab now scores the whole attacker playbook, not just the outright-hostile one-liners: <b>discovery</b> commands (whoami / id / uname / ps / netstat / ss / ip a / cat /etc/hosts…, +1 RECON), <b>credential access</b> (/etc/shadow +3, /etc/passwd &amp; sudoers +2, SSH key material +2, CRED-ENUM), <b>scanners</b> (nmap / masscan / arp-scan… +3 NET-SCAN) and <b>offensive tools</b> (hydra / sqlmap / linpeas / chisel… +3 OFFTOOL; installing one via apt/pip is +2 TOOL-INSTALL), <b>chmod +x</b> (+2, setuid bits +3), <b>SUID/sudo -l hunting</b> (+2), <b>account manipulation</b> (useradd / usermod / visudo… +3), <b>persistence edits</b> (authorized_keys append +3; cron / rc-file edits +2), broader <b>anti-forensics</b> (history/log wipes, timestomping, now +3) and <b>security-control disabling</b> (setenforce 0 / auditd stop / ufw disable +2), <b>remote copy</b> (scp/rsync/sftp to a host +2 EXFIL), <b>outbound ssh</b> (+1, root@ +2 LATERAL), <b>packet capture</b> (+2 SNIFF), <b>kernel modules</b> (+2 KMOD), <b>web-root script drops</b> (+3 WEBSHELL) and <b>ad-hoc HTTP servers</b> (+2 NET-SERVE); reverse-shell one-liners went to +3 and URL fetches to +2 (+1 more for raw-IP/explicit-port or script payloads). Tag hovers explain every reason, and new tags carry candidate ATT&amp;CK mappings. The <b>Logons</b> tab labels its two halves - <b>Outbound SSH Connections</b> (the lateral-movement table) and <b>Inbound SSH &amp; Interactive Logons</b> (the event grid). <b>Recent package installs</b> (Apps) gets an inline header row with an <b>Action</b> multiselect filter (install / upgrade / remove / purge / …), a <b>User-Requested Only</b> filter, and a green <b>USER-REQ</b> chip on every package a human explicitly asked for (apt <code>Requested-By</code> / typed <code>apt install</code>), separating them at a glance from unattended-upgrade and cron noise (also marked in the report). A <b>Non-Business Hours</b> filter on <b>Logons, Actions, Events, Apache logs and Timeline</b> shows only rows timestamped outside business hours in the collector host's local time - <b>Mon-Fri 08:00-18:00, with the whole weekend treated as out-of-hours</b> (offset from uac.log; treated as UTC when the capture carried none) - untimestamped rows are hidden while it's on, a Timeline row stays if <em>any</em> of its four times is out-of-hours, the Logons By-source-IP view re-aggregates from out-of-hours events only, and the filtered report honours it. Bug fix: a filtered report with the Events <b>Dual-Use Apps</b> filter active no longer dies on an undefined variable (<code>hiT</code>, a leftover of the old hide-TOOLING toggle). <b>Row-cap honesty:</b> the shared display cap was raised (5,000 → <b>10,000</b> rows), the previously-<em>silent</em> caps on the package table (was 300) and the persistence-findings table (2,000) now disclose, and every capped table shows a prominent red <b>⚠ Maximum Rows Exceeded</b> chip (with a tooltip that points at the filters and the uncapped <b>Export → CSV</b>) whenever the filtered set is larger than what's rendered - so a truncated grid can never again read as the complete picture. (Display caps are a render-time performance bound; CSV export always writes every filtered row, and the case window <code>/from /to</code> narrows the timeline at parse time.)</li>
       <li><b>Score filter (v1.5.1):</b> a <b>Score</b> min-score dropdown (any / ≥1 / ≥3 / ≥5) on the Processes, Network, Timeline, Apache logs and Actions tabs - independent of the SUSPICIOUS ONLY flag, and honoured by the filtered report. Also: "Flagged only" is now "SUSPICIOUS ONLY", the Logon chart title is Title-Cased, and a little more breathing room above System Overview.</li>

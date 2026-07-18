@@ -243,7 +243,7 @@
       <!-- v1.5: provisioning baseline sits at the very top (when present), then System Overview -->
       <div id="ovCloud"></div>
       <!-- v1.4: System overview, then the sar / network / boots context blocks -->
-      <h3 title="Run metadata parsed from uac.log, the per-dataset counts, and the highest-scoring findings across every dataset - the at-a-glance triage summary.">System Overview</h3>
+      <h3 style="margin-top:20px" title="Run metadata parsed from uac.log, the per-dataset counts, and the highest-scoring findings across every dataset - the at-a-glance triage summary.">System Overview</h3>
       <div class="cards3">
         <div class="col3">
           <!-- v0.17.1: "Run metadata" heading removed - redundant under "System overview" -->
@@ -394,7 +394,14 @@
           <span class="muted">&rarr;</span>
           <input class="txt mono" id="dto" placeholder="to YYYY-MM-DD" style="width:140px" title="Filter timeline by mtime/ctime/crtime (UTC)"></span>
         <span class="sep"></span>
-        <label style="font-size:12px" title="Show only rows scored suspicious (score ≥ 3)."><input type="checkbox" id="susOnly"> Flagged only</label>
+        <label style="font-size:12px" title="Show only rows scored suspicious (score ≥ 3)."><input type="checkbox" id="susOnly"> SUSPICIOUS ONLY</label>
+        <span id="scoreWrap" class="hide"><span class="sep"></span>
+          <select id="scoreMin" title="Show only rows scoring at or above this threshold (independent of the SUSPICIOUS ONLY flag).">
+            <option value="0">Score: any</option>
+            <option value="1">Score &ge; 1</option>
+            <option value="3">Score &ge; 3</option>
+            <option value="5">Score &ge; 5</option>
+          </select></span>
         <span id="tzWrap" class="hide"><span class="sep"></span>
           <label style="font-size:12px" title="Render epoch times in the collector's local time zone (from uac.log) instead of UTC."><input type="checkbox" id="tzMain"> Host TZ</label></span>
         <span class="sep"></span>
@@ -426,7 +433,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.5.0";
+var APP_VERSION = "1.5.1";
 /* v0.9.4 - SQLECmd wrapper: offer to DOWNLOAD instead of hunt for it (operator request):
    - if the wrapper isn't found anywhere, a hand-off now offers to download the latest
      SQLECmd-Wrapper.hta from GitHub into THIS app's folder (browse stays as the offline
@@ -555,6 +562,8 @@ var qTimer = null;
 var TAB = "overview";                 // overview | proc | net | logon | time | ioc
 var BUSY = false;
 var SUSONLY = false;
+var SCOREMIN = 0;                     // v1.5.1: shared min-score filter (proc/net/time/web/actions)
+var SCORE_TABS = {proc:1, net:1, time:1, web:1, actions:1};
 var DFROM = 0, DTO = 0;
 var IOCS = [];
 var DETREC = null, DETKIND = "";
@@ -4204,6 +4213,7 @@ function setTab(t, quiet){
   setTblHeading(t);                                          // v1.4: per-tab heading + description
   showEl("logonChart", t==="logon");                         // v1.5: charts
   showEl("netChart", t==="net");
+  showEl("scoreWrap", !!SCORE_TABS[t]);                       // v1.5.1: min-score filter
   if(!isOv && !isLogs && !isEv && !isPersist && !isApps && !isBrowser){ $("q").value=QUERY; }
   if(!quiet) render();
 }
@@ -4686,7 +4696,9 @@ function scoreCell(r){ return '<td class="first"><span class="sc '+scClass(r.sco
 function rowCls(r){ var c=""; if(r.score>=5) c="row-flag"; else if(r.score>=3) c="row-warn"; if(hasIocTag(r)) c+=(c?" ":"")+"ioc"; return c; }
 function hasIocTag(r){ for(var i=0;i<r.tags.length;i++) if(r.tags[i]==="IOC") return true; return false; }
 function hasTag(r,t){ for(var i=0;i<r.tags.length;i++) if(r.tags[i]===t) return true; return false; }
-function passQ(r){ if(SUSONLY && r.score<3) return false; if(QUERY && r.blob.indexOf(QUERY)<0) return false; return true; }
+function passQ(r){ if(SUSONLY && r.score<3) return false;
+  if(SCOREMIN>0 && SCORE_TABS[TAB] && (r.score||0)<SCOREMIN) return false;   // v1.5.1: min-score filter
+  if(QUERY && r.blob.indexOf(QUERY)<0) return false; return true; }
 function sortRows(rows, cols, st){
   var sk=cols[st.k].sk, dir=st.d;
   rows.sort(function(a,b){ var x=sk(a),y=sk(b);
@@ -4895,7 +4907,7 @@ function logonChartHtml(){
       bars.push('<span class="vbar" title="'+esc(fmtDayKey(days[i]))+': '+b.succ+' success, '+b.fail+' failed">'
         +'<i style="bottom:0;height:'+fp+'px;background:#f85149"></i>'
         +'<i style="bottom:'+fp+'px;height:'+sp+'px;background:#3fb950"></i></span>'); }
-    return '<div class="chart"><div class="ct">Logon activity over time</div>'
+    return '<div class="chart"><div class="ct">Logon Activity Over Time</div>'
       +'<div class="cd">Accepted / session (green) vs failed (red) authentication events per day - a tall red column is a brute-force day. Hover a bar for the counts.</div>'
       +'<div class="bars">'+bars.join("")+'</div>'
       +'<div class="lg">'+esc(fmtDayKey(days[0]))+' &rarr; '+esc(fmtDayKey(days[days.length-1]))+' &middot; '+nf(days.length)+' day(s) &middot; <span style="color:#3fb950">■</span> success &nbsp;<span style="color:#f85149">■</span> failed</div></div>';
@@ -5680,7 +5692,8 @@ function repScore(r){ return r.score+(r.tags&&r.tags.length?(" ["+r.tags.join(",
 function activeFilterDesc(){
   var f=[];
   if(QUERY) f.push('search "'+QUERY+'"');
-  if(SUSONLY) f.push("flagged-only (score >= 3)");
+  if(SUSONLY) f.push("suspicious-only (score >= 3)");
+  if(SCOREMIN>0) f.push("score >= "+SCOREMIN+" (processes/network/timeline/apache/actions)");
   if(DFROM||DTO) f.push("case window "+($("dfrom").value||"…")+" to "+($("dto").value||"…"));
   if(mdSet("logfUser")) f.push("logon user in ["+mdDesc("logfUser")+"]");
   if(mdSet("logfSrc")) f.push("logon source in ["+mdDesc("logfSrc")+"]");
@@ -5722,6 +5735,8 @@ function generateReport(){
         if(!mdPass("netLoc", netLocOf(r7))) continue;
         if(!mdPass("netType", netSvcOf(r7))) continue; b1.push(r7); } _N=b1; }
       if(mdSet("procSus")){ b1=[]; for(i7=0;i7<_P.length;i7++){ if(mdPassAny("procSus",_P[i7].tags||[])) b1.push(_P[i7]); } _P=b1; }
+      if(SCOREMIN>0){ var scf=function(a){ var o=[],z; for(z=0;z<a.length;z++){ if((a[z].score||0)>=SCOREMIN) o.push(a[z]); } return o; };
+        _P=scf(_P); _N=scf(_N); _T=scf(_T); _W=scf(_W); _AC=scf(_AC); }
       if(mdSet("actUser")||(DFROM||DTO)){ b1=[]; for(i7=0;i7<_AC.length;i7++){ var ar7=_AC[i7];
         if(!mdPass("actUser", ar7.user)) continue;
         if((DFROM||DTO) && ar7.epoch && !inDay(logonDay(ar7.epoch))) continue; b1.push(ar7); } _AC=b1; }
@@ -5952,6 +5967,7 @@ function init(){
   $("q").onkeyup=function(){ if(qTimer) window.clearTimeout(qTimer);
     qTimer=window.setTimeout(function(){ QUERY=trimStr($("q").value).toLowerCase(); render(); },150); };
   $("susOnly").onclick=function(){ SUSONLY=this.checked; render(); };
+  $("scoreMin").onchange=function(){ SCOREMIN=parseInt(this.value,10)||0; render(); };   // v1.5.1
   function setTz(on){ TZVIEW=on;
     try{ $("tzMain").checked=on; }catch(e1){} try{ $("tzLogs").checked=on; }catch(e2){} try{ $("evTz").checked=on; }catch(e3){}
     try{ $("tzOv").checked=on; }catch(e4){} try{ $("tzPersist").checked=on; }catch(e5){} try{ $("tzApps").checked=on; }catch(e6){}
@@ -6002,6 +6018,7 @@ function init(){
   $("dfrom").onchange=function(){ DFROM=dayNum(this.value); if(LASTROOT){ reparseTimeline(); } };
   $("dto").onchange=function(){ DTO=dayNum(this.value); if(LASTROOT){ reparseTimeline(); } };
   $("clearBtn").onclick=function(){ $("q").value=""; QUERY=""; $("susOnly").checked=false; SUSONLY=false;
+    SCOREMIN=0; try{ $("scoreMin").value="0"; }catch(e3){}   // v1.5.1
     mdClearAll(); USERS_SEL={}; renderUsersDropBtn();   // v0.17: clears every multiselect filter too
     try{ $("netPubOnly").checked=false; }catch(e){} try{ $("bruteOnly").checked=false; }catch(e2){} render(); };
   $("exportBtn").onclick=exportView;
@@ -6123,6 +6140,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Inventory tab</b> - a map of every key artifact (processes, network, logons, accounts, persistence, system, filesystem, logs, containers) showing present/absent, size, and an <b>open folder</b> link that opens the raw file in Explorer. The Persistence &amp; config inventory on Overview has the same open-folder links; click an artifact name there to view its contents inline.</li>
       <li><b>UI (v0.7):</b> the Processes table has a <b>Name</b> column and a <b>Tree view</b> toggle (collapsible parent/child hierarchy - click ▸/▾ to fold, a row for detail). <b>Logons</b> has User / Source / Result filters and a clickable link to each raw source log. <b>Events</b> has a min-score filter and a kind filter. Long tables keep their <b>header row frozen</b> while scrolling, and <b>Persistence &amp; system findings</b> shows a date/time column.</li>
       <li><b>Resizable columns</b> everywhere - drag the right edge of any column header (it highlights on hover); double-click the edge to reset. Widths persist per view.</li>
+      <li><b>Score filter (v1.5.1):</b> a <b>Score</b> min-score dropdown (any / ≥1 / ≥3 / ≥5) on the Processes, Network, Timeline, Apache logs and Actions tabs - independent of the SUSPICIOUS ONLY flag, and honoured by the filtered report. Also: "Flagged only" is now "SUSPICIOUS ONLY", the Logon chart title is Title-Cased, and a little more breathing room above System Overview.</li>
       <li><b>Charts + polish (v1.5):</b> the <b>Logons</b> tab now opens with a <b>logon-activity-over-time</b> chart (accepted/session green vs failed red, per day - a tall red column is a brute-force day), and the <b>Network</b> tab with a <b>connections-by-country</b> distribution (ss is a point-in-time snapshot, so it's a distribution, not a time series; falls back to service type / socket state without geo). Also: Provisioning baseline (cloud-init) moved to the very top of the Overview; a divider above the sar summary; Log Integrity tab moved next to UAC Inventory; every filter label and dropdown is Title-Cased ("Dual-Use Apps", "Notable Events", "Online Geo/ASN lookups", "Location/Type/User/Source/Result/Suspicion/Accounts"); table headings Title-Cased ("Logon Events", "User Accounts", ...); heading descriptions sentence-capitalized; and the boots Idx column left-aligned.</li>
       <li><b>Presentation pass, cont. (v1.4.1):</b> Generate report is green; all Host-TZ toggles read "Host TZ"; the Events "TOOLING only" filter is now "Dual Use Apps"; the Events and Log-Integrity tabs got violet Export buttons; the Events tab gained a heading + description; the Logs tab is renamed "Log Integrity"; the Actions tab sits left of Events; and the sar %usr/%idle columns are left-aligned.</li>
       <li><b>Presentation pass (v1.4):</b> every table tab now shows a <b>heading and one-line description</b> above the grid; report files follow the convention <code>&lt;Hostname&gt; - Full|Filtered UAC Report - YYYYMMDD-HHMMSS</code> (UTC); the tab bar is reordered (Browser by Users, SSH Keys by Logons, Events before Timeline) and <b>Inventory</b> is now <b>UAC Inventory</b>; <b>System Overview</b> sits at the top of the Overview with sar/boots/cloud-init below it; the sar cards and the cloud-init section gained tooltips/descriptions; the Events <b>hide TOOLING</b> toggle became <b>TOOLING only</b> (spot recently installed dual-use tools directly); <b>Export View → CSV</b> and <b>Copy to Clipboard</b> are violet; and toolbar/heading capitalization was tidied up.</li>

@@ -27,7 +27,7 @@ UAC is excellent at *collecting* a Unix-like host. This tool is about *reading t
 
 ## What it shows
 
-Fifteen tabs:
+Sixteen tabs:
 
 | Tab | Built from | Highlights |
 |---|---|---|
@@ -37,6 +37,7 @@ Fifteen tabs:
 | **Network** | `ss` + `/proc/net` hex-decode | **Type column** (SSH/HTTP/SMB/RDP/… from ports), **Location column** (geo/ASN), public-IPs-only + multiselect filters, hidden-socket cross-check, **click a public IP → VirusTotal** |
 | **Apps** | apt/dpkg history, `docker ps`/inspect/diff | **Docker containers** (privileged / host-ns / sensitive mounts / implants) and package installs with attribution + suspicious-only filter |
 | **Users** | passwd, group, shadow, lastlog, homes | Per-account view with **Enabled** verdict, SSH-key and history counts, multiselect account filter, **By group** view |
+| **SSH Keys** | `~/.ssh`, `/etc/ssh`, null-passphrase check | Key inventory: **authorized_keys** (inbound access, source-restriction + forced-command flags), per-user **identity keys** (public/private, passphrase state), **host keys**; short key-id to match a key across accounts; null-passphrase private keys flagged |
 | **Logons** | auth.log (ISO + classic syslog), wtmp/btmp/lastlog, last/lastb | **Lateral movement panel** (known_hosts + ssh config + typed commands), **By source IP** aggregation, spray/brute-then-success detection, multiselect filters |
 | **Persistence** | 20+ mechanisms | Config inventory + scored command lines: cron, systemd units/timers (system+user), authorized_keys, rc.local, ld.so.preload, motd & APT hooks, modprobe, XDG autostart, shell startup files, **PAM module dirs** |
 | **Timeline** | TSK bodyfile | Full MAC-times, case-window filterable, **pivot ±15 min** target from any event |

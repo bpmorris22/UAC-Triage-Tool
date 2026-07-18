@@ -201,6 +201,7 @@
         <button class="btn" id="tabNet" data-tab="net" title="Sockets from ss + /proc/net hex-decode cross-check, scored; geo/ASN, service types, VirusTotal links">Network</button>
         <button class="btn" id="tabApps" data-tab="apps" title="Recent package installs + containers (v0.13)">Apps</button>
         <button class="btn" id="tabUsers" data-tab="users" title="Per-account view: shell, groups, lock state, SSH keys, last login (v0.11)">Users</button>
+        <button class="btn" id="tabSsh" data-tab="ssh" title="SSH key inventory: authorized_keys (inbound access), per-user identity keys, and host keys - with options, comments and null-passphrase flags (v1.1)">SSH Keys</button>
         <button class="btn" id="tabLogon" data-tab="logon" title="Authentication events (auth.log, wtmp/btmp, last/lastb) + lateral movement + by-source-IP aggregation">Logons</button>
         <button class="btn" id="tabPersist" data-tab="persist" title="Scored persistence command lines + the persistence/config file inventory (v0.13)">Persistence</button>
         <button class="btn" id="tabTime" data-tab="time" title="Filesystem timeline from the bodyfile (mtime/atime/ctime/crtime), scored; the pivot ±15 min target">Timeline</button>
@@ -396,7 +397,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.0.0";
+var APP_VERSION = "1.1.0";
 /* v0.9.4 - SQLECmd wrapper: offer to DOWNLOAD instead of hunt for it (operator request):
    - if the wrapper isn't found anywhere, a hand-off now offers to download the latest
      SQLECmd-Wrapper.hta from GitHub into THIS app's folder (browse stays as the offline
@@ -580,7 +581,7 @@ var HIDDENPIDS = {};                  // pid -> 1
 var PROCSCORE = {};                   // pid -> score (for network SUSPROC)
 var SORT = { proc:{k:0,d:-1}, net:{k:0,d:-1}, logon:{k:0,d:-1}, time:{k:1,d:-1}, ioc:{k:0,d:1},
              web:{k:1,d:-1}, users:{k:1,d:1}, audit:{k:1,d:-1}, logonip:{k:5,d:-1},
-             groups:{k:3,d:-1} };   // v0.11 / v0.17
+             groups:{k:3,d:-1}, ssh:{k:0,d:-1} };   // v0.11 / v0.17 / v1.1
 /* v0.8 datasets (browser DBs -> SQLECmd hand-off) */
 var BROWSERDBS = [];                  // detected browser SQLite DBs under user profiles
 var BDB_COMMON = "";                  // deepest common folder of all hits (analyze-all input)
@@ -1216,6 +1217,7 @@ function parseCapture(root, input){
       ["systemd live state",         function(){ parseSystemdLive(root); }],
       ["fs findings (suid/ww)",      function(){ parseFsFindings(root); }],
       ["ssh key findings",           function(){ parseSshFindings(root); }],
+      ["ssh key inventory",          function(){ parseSshKeys(root); }],
       ["shell histories",            function(){ parseHistories(root); }],
       ["/proc/net decode",           function(){ parseProcNet(root); }],
       ["auditd summary",             function(){ parseAudit(root); }],
@@ -2727,6 +2729,126 @@ function parseSshFindings(root){
   }
 }
 
+/* ---- v1.1: SSH key inventory ----
+   Lists the actual key material in the capture: authorized_keys entries (who can log IN),
+   per-user identity keys (id_*, id_*.pub), and host keys (/etc/ssh/ssh_host_*). Answers
+   "who can get into this box and what keys does it hold" in one table. */
+var SSHKEYS=[];
+var SSH_ALGO=/^(sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com|ssh-ed25519|ssh-rsa|ssh-dss|ecdsa-sha2-\S+)$/;
+/* short visual id from a base64 key blob (first8..last6) - lets you match an authorized_keys
+   entry to an id_*.pub without computing a real fingerprint (base64+SHA256 is heavy in JScript) */
+function keyShortId(b64){ b64=String(b64||""); if(b64.length<16) return b64;
+  return b64.substring(0,8)+"…"+b64.substring(b64.length-6); }
+function algoShort(t){ t=String(t||"");
+  var m=t.match(/^ecdsa-sha2-(\S+)/); if(m) return "ecdsa "+m[1];
+  if(/^sk-ssh-ed25519/.test(t)) return "ed25519-sk";
+  if(/^sk-ecdsa/.test(t)) return "ecdsa-sk";
+  return t.replace(/^ssh-/,"");
+}
+/* parse one public/authorized key line: "[options] <algo> <base64> [comment]" -> row or null */
+function parseKeyLine(line){
+  var ln=trimStr(line); if(ln===""||ln.charAt(0)==="#") return null;
+  var toks=ln.split(/\s+/), i=-1;
+  for(var k=0;k<toks.length;k++){ if(SSH_ALGO.test(toks[k])){ i=k; break; } }
+  if(i<0) return null;   // not a key line (e.g. a bare options remnant)
+  var options=(i>0)?toks.slice(0,i).join(" "):"";
+  var algo=toks[i], blob=toks[i+1]||"", comment=toks.slice(i+2).join(" ");
+  return { options:options, algo:algo, blob:blob, comment:comment };
+}
+function pushSshKey(o){ o.blobIdx=lc((o.scope||"")+" "+(o.algo||"")+" "+(o.comment||"")+" "+(o.options||"")+" "+(o.file||"")+" "+(o.blob||""));
+  o.kind2="sshkey"; o.score=0; o.tags=[]; o.reasons=[]; SSHKEYS.push(o); }
+function parseSshKeys(root){
+  SSHKEYS=[];
+  var fso=new ActiveXObject("Scripting.FileSystemObject"), i;
+  // 0) null-passphrase set (UAC verified) - user -> {keyname:1} for cross-referencing identity keys
+  var nullSet={}, nd=jp(root,"ssh/private_keys_with_null_passphrases");
+  if(fso.FolderExists(nd)){ try{ var ne=new Enumerator(fso.GetFolder(nd).SubFolders);
+    for(;!ne.atEnd();ne.moveNext()){ var nu=ne.item(), unm=nu.Name+""; nullSet[unm]={};
+      var nfe=new Enumerator(nu.Files); for(;!nfe.atEnd();nfe.moveNext()){
+        var kn=(nfe.item().Name+"").replace(/^ssh-keygen_-P_-y_-f_/,"").replace(/\.txt$/,""); nullSet[unm][kn]=1; } }
+  }catch(e0){} }
+  var seenPriv={};   // user|keyname of private-key FILES we listed, so we don't double-add null-pass synthetics
+  var homes=userHomes(root);
+  for(i=0;i<homes.length;i++){
+    var user=userLabel(homes[i]+"\\x"), sdir=homes[i]+"\\.ssh";
+    if(!fso.FolderExists(sdir)) continue;
+    // 1) authorized_keys / authorized_keys2 - INBOUND access
+    var akNames=["authorized_keys","authorized_keys2"];
+    for(var a=0;a<akNames.length;a++){ var akp=sdir+"\\"+akNames[a];
+      if(!fileExists(akp)) continue;
+      var ak=readLines(akp);
+      for(var j=0;j<ak.length;j++){ var pk=parseKeyLine(ak[j]); if(!pk) continue;
+        var forced=(pk.options.match(/command="([^"]+)"/i)||["",""])[1];
+        var restr=/(^|,)(from=|no-pty|no-port-forwarding|restrict)/i.test(pk.options);
+        pushSshKey({ kind:"authorized_keys", scope:user, algo:algoShort(pk.algo), rawAlgo:pk.algo,
+          comment:pk.comment, blob:pk.blob, id:keyShortId(pk.blob), file:akNames[a]+" ("+user+")",
+          options:pk.options, forced:forced, restricted:restr, priv:false }); }
+    }
+    // 2) identity keys in ~/.ssh: id_* (private) and id_*.pub / *.pub (public)
+    try{ var fe=new Enumerator(fso.GetFolder(sdir).Files);
+      for(;!fe.atEnd();fe.moveNext()){ var f=fe.item(), nm=f.Name+"";
+        if(/^known_hosts|^config$|^authorized_keys/.test(nm)) continue;
+        if(/\.pub$/i.test(nm)){ var pl=readLines(f.Path+""); var pub=pl.length?parseKeyLine(pl[0]):null;
+          if(pub) pushSshKey({ kind:"identity (public)", scope:user, algo:algoShort(pub.algo), rawAlgo:pub.algo,
+            comment:pub.comment, blob:pub.blob, id:keyShortId(pub.blob), file:nm+" ("+user+")",
+            options:"", forced:"", restricted:false, priv:false });
+        } else if(/^id_|_key$|(^|_)identity$/i.test(nm) || /private/i.test(nm)){
+          // a private key file - classify by PEM header; cross-ref null-passphrase set
+          var enc=privKeyEncrypted(f.Path+"");
+          var nullp=(nullSet[user] && nullSet[user][nm])?true:(enc===false?true:null);
+          seenPriv[user+"|"+nm]=1;
+          pushSshKey({ kind:"identity (PRIVATE)", scope:user, algo:privKeyAlgo(f.Path+""), rawAlgo:"",
+            comment:"", blob:"", id:"", file:nm+" ("+user+")", options:"", forced:"",
+            restricted:false, priv:true, encrypted:enc, nullpass:nullp }); }
+      }
+    }catch(e1){}
+  }
+  // 2b) null-passphrase private keys UAC verified whose key BODY wasn't collected (common on
+  //     non-root captures) - the check itself is the evidence, so surface a row anyway
+  for(var un in nullSet){ if(!nullSet.hasOwnProperty(un)) continue;
+    for(var kn2 in nullSet[un]){ if(!nullSet[un].hasOwnProperty(kn2)) continue;
+      if(seenPriv[un+"|"+kn2]) continue;
+      pushSshKey({ kind:"identity (PRIVATE)", scope:un, algo:"(key body not collected)", rawAlgo:"",
+        comment:"", blob:"", id:"", file:"ssh null-passphrase check: "+kn2, options:"", forced:"",
+        restricted:false, priv:true, encrypted:false, nullpass:true }); }
+  }
+  // 3) host keys in /etc/ssh
+  var ed=jp(root,"[root]/etc/ssh");
+  if(fso.FolderExists(ed)){ try{ var he=new Enumerator(fso.GetFolder(ed).Files);
+    for(;!he.atEnd();he.moveNext()){ var hf=he.item(), hn=hf.Name+"";
+      if(/^ssh_host_.*_key\.pub$/i.test(hn)){ var hl=readLines(hf.Path+""); var hp=hl.length?parseKeyLine(hl[0]):null;
+        if(hp) pushSshKey({ kind:"host key (public)", scope:"system", algo:algoShort(hp.algo), rawAlgo:hp.algo,
+          comment:hp.comment, blob:hp.blob, id:keyShortId(hp.blob), file:hn, options:"", forced:"", restricted:false, priv:false });
+      } else if(/^ssh_host_.*_key$/i.test(hn)){ var he2=privKeyEncrypted(hf.Path+"");
+        pushSshKey({ kind:"host key (PRIVATE)", scope:"system", algo:privKeyAlgo(hf.Path+""), rawAlgo:"",
+          comment:"", blob:"", id:"", file:hn, options:"", forced:"", restricted:false, priv:true, encrypted:he2, nullpass:(he2===false?true:null) }); }
+    }
+  }catch(e2){} }
+  if(SSHKEYS.length) appendLog("SSH keys: "+nf(SSHKEYS.length)+" key(s) inventoried (authorized_keys / identity / host).");
+}
+/* PEM/OpenSSH private-key header sniff: algorithm name, and whether it is passphrase-encrypted */
+function privKeyFirst(path){ try{ var ls=readLines(path); return ls.slice(0,4); }catch(e){ return []; } }
+function privKeyAlgo(path){ var h=privKeyFirst(path).join(" ");
+  if(/BEGIN OPENSSH PRIVATE KEY/.test(h)) return "openssh";
+  if(/BEGIN RSA PRIVATE KEY/.test(h)) return "rsa";
+  if(/BEGIN EC PRIVATE KEY/.test(h)) return "ecdsa";
+  if(/BEGIN DSA PRIVATE KEY/.test(h)) return "dsa";
+  if(/BEGIN.*PRIVATE KEY/.test(h)) return "pem";
+  return "(private)"; }
+/* true = encrypted, false = NOT encrypted (usable as-is), null = can't tell / not a key file */
+function privKeyEncrypted(path){ var ls=privKeyFirst(path); var h=ls.join("\n");
+  if(!/PRIVATE KEY/.test(h)) return null;
+  if(/Proc-Type:\s*4,ENCRYPTED/i.test(h)) return true;             // classic PEM encrypted
+  if(/BEGIN OPENSSH PRIVATE KEY/.test(h)){
+    // OpenSSH format: the cipher name follows the magic; "none" = unencrypted. We only have the
+    // base64 body, so decode isn't trivial - defer to the null-passphrase set for certainty and
+    // return null (unknown) here unless it's clearly a classic PEM.
+    return null;
+  }
+  if(/BEGIN (RSA|EC|DSA) PRIVATE KEY/.test(h)) return false;        // PEM with no Proc-Type = unencrypted
+  return null;
+}
+
 /* ---- shell histories: score hostile one-liners (recon, download-exec, anti-forensics) ---- */
 var HIST_PREFILTER=/\b(nc|ncat|socat|curl|wget|base64|chmod\s+\+x|useradd|usermod|passwd|ssh-keygen|scp|tcpdump|nmap|masscan|chattr|setcap)\b|\/dev\/tcp\/|\|\s*(ba|z)?sh\b|python[0-9.]*\s+-c|perl\s+-e|history\s+-c|unset\s+HISTFILE|shred\b|>\s*\/var\/log/i;
 function histScoreLine(src, user, ln, ep){
@@ -2879,6 +3001,7 @@ var MITRE={
   "CAPS":["T1548","File capabilities (privesc)"],
   "WW-SYS":["T1222","File Permissions Modification (world-writable)"],
   "NULL-KEY":["T1552.004","Unsecured Credentials: private keys"],
+  "FORCED-CMD":["T1098.004","SSH authorized_keys manipulation (forced command)"],
   "PRIVILEGED":["T1611","Escape to Host: privileged container"],
   "HOST-NS":["T1611","Escape to Host: host namespace"],
   "SENS-MOUNT":["T1610","Deploy Container / sensitive mount"],
@@ -3259,6 +3382,15 @@ function rescoreAll(){
     h=iocHit(r.blob); if(h){ r.score+=3; r.tags.push("IOC"); r.reasons.push("IOC/keyword hit: "+h); }
     if(r.corrob){ r.score+=2; r.tags.push("LATERAL"); r.reasons.push("destination corroborated: in known_hosts AND a typed ssh/scp command"); }
     if(r.kind==="history" && /^\d/.test(r.dest) && !ipIsLocal(r.dest)){ r.score+=1; r.tags.push("EXTERNAL"); r.reasons.push("typed outbound command to a public IP"); }
+  }
+  // v1.1: SSH key inventory scoring
+  for(i=0;i<SSHKEYS.length;i++){ r=SSHKEYS[i]; r.tags=[]; r.reasons=[]; r.score=0;
+    h=iocHit(r.blobIdx); if(h){ r.score+=3; r.tags.push("IOC"); r.reasons.push("IOC/keyword hit: "+h); }
+    if(r.priv && r.nullpass===true){ r.score+=2; r.tags.push("NULL-KEY"); r.reasons.push("private key has NO passphrase - usable as-is for lateral movement if exfiltrated"); }
+    if(r.kind==="authorized_keys"){
+      if(r.forced){ r.score+=1; r.tags.push("FORCED-CMD"); r.reasons.push("authorized_keys entry pins a forced command: "+trunc(r.forced,80)); }
+      if(!r.restricted){ r.tags.push("UNRESTRICTED"); r.reasons.push("no from=/restrict source restriction on this authorized_keys entry"); }
+    }
   }
   // v0.2 datasets: logons (own pre-pass rescore), persistence findings, containers all re-score
   // against the current IOC list. hash_executables dormant hits are re-run in the sweep, not here.
@@ -3660,7 +3792,10 @@ function mdToggleBtn(key){ var p=$(key+"Panel"); if(!p) return; var wasHidden=/\
   mdCloseAll(key); showEl(key+"Panel", wasHidden); }
 function mdClearAll(){ for(var k in MDROP){ if(MDROP.hasOwnProperty(k)){ MDROP[k].sel={}; mdBtn(k); } } }
 
-/* ---- v0.16: multiselect account dropdown (Users tab) ---- */
+/* ---- v1.1: SSH key inventory (Users tab "SSH keys" view) ----
+   Everything key-shaped the capture holds: per-user authorized_keys ENTRIES, public keys,
+   private keys (with encryption detection - see opensshCipher), known_hosts, client config,
+   plus /etc/ssh host keys. Non-root captures usually carry only public halves; a
 var USERS_SEL={};
 function usersSelSet(){ var k; for(k in USERS_SEL){ if(USERS_SEL.hasOwnProperty(k)) return USERS_SEL; } return null; }
 function renderUsersDropBtn(){ var n=0,k; for(k in USERS_SEL){ if(USERS_SEL.hasOwnProperty(k)) n++; }
@@ -3832,6 +3967,44 @@ function renderAudit(){
     $("count").innerHTML="0 rows"; return; }
   if(AUDITCAP.total>AUDITCAP.shown) $("count").innerHTML+=' · <span class="tag sus">capped: '+nf(AUDITCAP.shown)+' of '+nf(AUDITCAP.total)+' stored</span>';
 }
+/* v1.1: SSH key inventory table */
+function sshEncCell(r){
+  if(!r.priv) return '<span class="muted">-</span>';
+  if(r.nullpass===true) return '<span class="err">NO passphrase</span>';
+  if(r.encrypted===true) return '<span class="pgood">encrypted</span>';
+  return '<span class="muted">unknown</span>';
+}
+var KCOLS=[
+  {h:"Score / tags", tip:"Suspicion score plus tags - hover a tag for reasons (NULL-KEY, FORCED-CMD, UNRESTRICTED, IOC)", sk:function(r){return r.score;}, cell:function(r){return scoreCell(r);}},
+  {h:"Kind", tip:"authorized_keys = inbound access (who can log IN); identity = a user's own key pair; host key = the server's /etc/ssh identity", sk:function(r){return r.kind;}, cell:function(r){return '<td class="mono'+(r.priv?' first':'')+'">'+esc(r.kind)+'</td>';}},
+  {h:"Scope", tip:"The account the key belongs to, or 'system' for host keys", sk:function(r){return lc(r.scope);}, cell:function(r){return '<td class="mono">'+esc(r.scope)+'</td>';}},
+  {h:"Algorithm", tip:"Key algorithm (ed25519 / rsa / ecdsa / openssh-format private, ...)", sk:function(r){return r.algo;}, cell:function(r){return '<td class="mono">'+esc(r.algo)+'</td>';}},
+  {h:"Comment", tip:"Key comment field (often user@host or a label) - a strong pivot for matching a key across accounts", sk:function(r){return lc(r.comment);}, cell:function(r){return '<td class="mono muted" title="'+esc(r.comment)+'">'+esc(trunc(r.comment,42)||"-")+'</td>';}},
+  {h:"Key id", tip:"Short visual id (first 8 … last 6 of the base64 key) to match the same key across authorized_keys and id_*.pub", sk:function(r){return r.id;}, cell:function(r){return '<td class="mono muted">'+esc(r.id||"-")+'</td>';}},
+  {h:"Access / passphrase", tip:"For authorized_keys: source restriction + any forced command. For private keys: whether it is passphrase-protected (NO passphrase = usable as-is if stolen).", sk:function(r){return (r.priv?(r.nullpass?0:2):9);}, cell:function(r){
+    if(r.priv) return '<td class="mono">'+sshEncCell(r)+'</td>';
+    if(r.kind==="authorized_keys"){ var b=r.restricted?'<span class="pgood">restricted</span>':'<span class="muted">unrestricted</span>'; if(r.forced) b+=' <span class="tag sus" title="'+esc(r.forced)+'">forced-cmd</span>'; return '<td class="mono">'+b+'</td>'; }
+    return '<td class="muted">-</td>'; }},
+  {h:"File", tip:"Source file in the capture (open-folder from the detail pane)", sk:function(r){return lc(r.file);}, cell:function(r){return '<td class="mono muted" title="'+esc(r.file)+'">'+esc(trunc(r.file,34))+'</td>';}}
+];
+/* best-effort raw path for an SSH key row (for the detail-pane open-folder link) */
+function sshRawPath(r){ if(!LASTROOT||!r) return "";
+  var fn=String(r.file||"").replace(/\s*\([^)]*\)\s*$/,"");   // strip the " (user)" suffix
+  if(/^host key/.test(r.kind)){ var hp=jp(LASTROOT,"[root]/etc/ssh")+"\\"+fn; return fileExists(hp)?hp:""; }
+  var homes=userHomes(LASTROOT);
+  for(var i=0;i<homes.length;i++){ if(userLabel(homes[i]+"\\x")===r.scope){ var p=homes[i]+"\\.ssh\\"+fn; return fileExists(p)?p:""; } }
+  return "";
+}
+function renderSshKeys(){
+  var rows=[]; for(var i=0;i<SSHKEYS.length;i++){ if(passQ(SSHKEYS[i])) rows.push(SSHKEYS[i]); }
+  sortRows(rows,KCOLS,SORT.ssh); drawTable(KCOLS,rows,SORT.ssh,"ssh");
+  if(!SSHKEYS.length){
+    $("tbl").innerHTML='<thead><tr><th>SSH keys</th></tr></thead><tbody><tr><td class="muted">No SSH key material in this capture - looked for per-user ~/.ssh (authorized_keys, id_*, *.pub) and /etc/ssh host keys. A logs-only or heavily-restricted collection may omit them; UAC full/ir_triage on a Linux host collects them.</td></tr></tbody>';
+    $("count").innerHTML="0 rows"; return; }
+  var ak=0,pk=0,hk=0,nullc=0; for(i=0;i<SSHKEYS.length;i++){ var s=SSHKEYS[i];
+    if(s.kind==="authorized_keys") ak++; else if(s.priv) pk++; if(/^host key/.test(s.kind)) hk++; if(s.priv&&s.nullpass===true) nullc++; }
+  $("count").innerHTML+=" · "+nf(ak)+" authorized-key entr"+(ak===1?"y":"ies")+", "+nf(pk)+" private key"+(pk===1?"":"s")+(nullc?(' <span class="tag sus">'+nullc+' with NO passphrase</span>'):"")+", "+nf(hk)+" host key"+(hk===1?"":"s");
+}
 /* Logons by-source-IP aggregation - the brute-force triage view */
 function buildLogonByIp(src){
   var arr=src||LOGON;   // v0.14: optional source array so the filtered report can aggregate a subset
@@ -3884,7 +4057,7 @@ function renderLateral(){
 /* ---------- tab / render dispatch ---------- */
 function setTab(t, quiet){
   TAB=t;
-  var ids={overview:"tabOverview",inv:"tabInv",proc:"tabProc",net:"tabNet",logon:"tabLogon",users:"tabUsers",persist:"tabPersist",time:"tabTime",events:"tabEvents",web:"tabWeb",audit:"tabAudit",apps:"tabApps",browser:"tabBrowser",logs:"tabLogs",ioc:"tabIoc"};
+  var ids={overview:"tabOverview",inv:"tabInv",proc:"tabProc",net:"tabNet",logon:"tabLogon",users:"tabUsers",ssh:"tabSsh",persist:"tabPersist",time:"tabTime",events:"tabEvents",web:"tabWeb",audit:"tabAudit",apps:"tabApps",browser:"tabBrowser",logs:"tabLogs",ioc:"tabIoc"};
   for(var k in ids){ if(ids.hasOwnProperty(k)){ $(ids[k]).className=(k===t)?"btn on":"btn"; } }
   var isOv=(t==="overview"), isLogs=(t==="logs"), isEv=(t==="events");
   var isPersist=(t==="persist"), isApps=(t==="apps"), isBrowser=(t==="browser");
@@ -3916,6 +4089,7 @@ function render(){
   else if(TAB==="time") renderTime();
   else if(TAB==="web") renderWeb();
   else if(TAB==="audit") renderAudit();
+  else if(TAB==="ssh") renderSshKeys();
   else if(TAB==="ioc") renderIoc();
   else if(TAB==="inv") renderInventory();
 }
@@ -4873,6 +5047,26 @@ function openRowDetail(idx){
     h+=detField("Shell-history lines", nf(r.hist));
     h+=detField("Last login", r.lastEp?(fmtTime(r.lastEp,true)+" "+tzLabel()+(r.lastIp?(" from "+r.lastIp):"")):"(none recorded)");
     h+='</div>';
+  } else if(TAB==="ssh"){
+    h+='<div style="font-size:14px;margin-bottom:6px"><b>'+esc(r.kind+" - "+r.scope)+'</b> '+tagsHtml(r)+'</div>';
+    h+=reasonsBlock(r);
+    h+='<div class="dl">';
+    h+=detField("Kind", r.kind);
+    h+=detField("Scope", r.scope);
+    h+=detField("Algorithm", r.algo+(r.rawAlgo&&r.rawAlgo!==r.algo?("  ("+r.rawAlgo+")"):""));
+    if(r.comment) h+=detField("Comment", r.comment);
+    if(r.id) h+=detField("Key id (short)", r.id);
+    if(r.priv){ h+=detField("Passphrase", r.nullpass===true?"NONE - UAC verified this key is usable without a passphrase":(r.encrypted===true?"encrypted (passphrase-protected)":"unknown - private-key body present but passphrase state not determinable from headers")); }
+    if(r.kind==="authorized_keys"){
+      h+=detField("Source restriction", r.restricted?"yes (from=/restrict/no-pty present)":"NONE - this key may connect from anywhere");
+      if(r.forced) h+=detField("Forced command", r.forced);
+      if(r.options) h+=detField("Options", r.options);
+    }
+    h+=detField("File", r.file);
+    if(r.blob) h+=detField("Key material (base64)", trunc(r.blob,120)+(r.blob.length>120?" …":""));
+    h+='</div>';
+    var sshp=sshRawPath(r);
+    if(sshp) h+='<div class="dl"><span class="lnk" data-open="'+esc(sshp)+'" title="Open the containing folder in Explorer">open source file</span></div>';
   } else if(TAB==="audit"){
     h+='<div style="font-size:14px;margin-bottom:6px"><b>'+esc(r.typ+(r.user?(" - "+r.user):""))+'</b> '+tagsHtml(r)+'</div>';
     h+=reasonsBlock(r);
@@ -5016,6 +5210,9 @@ function exportView(){
   else if(TAB==="audit"){ head=["Score","Tags","When_"+tzLabel(),"Type","User","SourceIP","Result","Detail","AuditId"]; lines=[head.join(",")];
     for(var xi=0;xi<rows.length;xi++){ var xr=rows[xi];
       lines.push([cq(xr.score),cq(xr.tags.join(";")),cq(xr.epoch?fmtTime(xr.epoch,true):""),cq(xr.typ),cq(xr.user),cq(xr.ip),cq(xr.res),cq(xr.detail),cq(xr.id)].join(",")); } }
+  else if(TAB==="ssh"){ head=["Score","Tags","Kind","Scope","Algorithm","Comment","KeyId","Restricted","ForcedCommand","Passphrase","Options","File","KeyMaterial"]; lines=[head.join(",")];
+    for(var ki=0;ki<rows.length;ki++){ var kr=rows[ki]; var pp=kr.priv?(kr.nullpass===true?"none":(kr.encrypted===true?"encrypted":"unknown")):"";
+      lines.push([cq(kr.score),cq(kr.tags.join(";")),cq(kr.kind),cq(kr.scope),cq(kr.algo),cq(kr.comment),cq(kr.id),cq(kr.kind==="authorized_keys"?(kr.restricted?"yes":"no"):""),cq(kr.forced),cq(pp),cq(kr.options),cq(kr.file),cq(kr.blob)].join(",")); } }
   else if(TAB==="proc"){ head=["Score","Tags","User","PID","PPID","Start","Exe","SHA1","Command"]; lines=[head.join(",")];
     for(var i=0;i<rows.length;i++){ var r=rows[i]; lines.push([cq(r.score),cq(r.tags.join(";")),cq(r.user),cq(r.pid),cq(r.ppid),cq(r.start),cq(r.exe),cq(r.sha1),cq(r.cmd)].join(",")); } }
   else if(TAB==="net"){ head=["Score","Tags","Proto","State","Local","Remote","ProcName","ProcPid"]; lines=[head.join(",")];
@@ -5062,6 +5259,7 @@ function copyNotes(){
     else if(TAB==="users") out.push(r.score+" | uid "+r.uid+" | "+r.user+" | "+r.shell+" | enabled:"+(function(){var e=userEnabled(r);return e===true?"yes":(e===false?"no":"?");})()+" | keys:"+r.keys+" | last:"+(r.lastEp?fmtTime(r.lastEp,false):"-")+(r.tags.length?(" | "+r.tags.join(",")):""));
     else if(TAB==="web") out.push(r.score+" | "+(r.epoch?fmtTime(r.epoch,true):"-")+" | "+r.ip+" | "+r.method+" "+r.status+" | "+r.uri+(r.tags.length?(" | "+r.tags.join(",")):""));
     else if(TAB==="audit") out.push(r.score+" | "+fmtTime(r.epoch,true)+" | "+r.typ+" | "+r.user+" | "+r.detail+(r.tags.length?(" | "+r.tags.join(",")):""));
+    else if(TAB==="ssh") out.push(r.score+" | "+r.kind+" | "+r.scope+" | "+r.algo+(r.comment?(" | "+r.comment):"")+(r.priv?(" | passphrase:"+(r.nullpass===true?"NONE":(r.encrypted===true?"encrypted":"unknown"))):(r.kind==="authorized_keys"?(" | "+(r.restricted?"restricted":"unrestricted")+(r.forced?(" forced:"+r.forced):"")):""))+(r.tags.length?(" | "+r.tags.join(",")):""));
   }
   try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied "+out.length+" lines to clipboard","ok"); }
   catch(e){ setStatus("Copy failed: "+e.message,"err"); }
@@ -5386,6 +5584,11 @@ function generateReport(){
     // --- Users ---
     section("users","Users", repTable(["Score","UID","User","Shell","Groups","Password","SSH keys","History","Last login"],
       repRows(_U, 300, function(r){ return {cls:repCls(r.score), cells:[repScore(r), r.uid, r.user, r.shell, r.groups.join(", "), (r.locked===null?"-":(r.locked?"locked":(r.hasPw?"set":"EMPTY"))), r.keys||"-", r.hist||"-", r.lastEp?(fmtTime(r.lastEp,false)+(r.lastIp?(" "+r.lastIp):"")):"-"]}; })));
+    // --- SSH keys ---
+    section("sshkeys","SSH keys", repTable(["Score","Kind","Scope","Algorithm","Comment","Key id","Access / passphrase","File"],
+      repRows(F(SSHKEYS), 300, function(r){ var acc=r.priv?(r.nullpass===true?"NO passphrase":(r.encrypted===true?"encrypted":"unknown")):(r.kind==="authorized_keys"?((r.restricted?"restricted":"unrestricted")+(r.forced?(" · forced: "+trunc(r.forced,60)):"")):"-");
+        return {cls:repCls(r.score), cells:[repScore(r), r.kind, r.scope, r.algo, r.comment, r.id, acc, r.file]}; }, true),
+      "authorized_keys entries are inbound access; identity keys are per-user; host keys are the server's /etc/ssh identity."));
     // --- Persistence ---
     var pe2=[];
     pe2.push(repTable(["Score","When","Source","Kind","Command line"],
@@ -5612,7 +5815,7 @@ function init(){
     var pf=n.getAttribute("data-pf");
     if(pf!=null && pf!==""){ openPersistFile(parseInt(pf,10)); return; }
     var di=n.getAttribute("data-i");
-    if(di!=null && di!=="" && (TAB==="proc"||TAB==="net"||TAB==="logon"||TAB==="time"||TAB==="web"||TAB==="users"||TAB==="audit")){ var ix=parseInt(di,10); openRowDetail(ix);
+    if(di!=null && di!=="" && (TAB==="proc"||TAB==="net"||TAB==="logon"||TAB==="time"||TAB==="web"||TAB==="users"||TAB==="audit"||TAB==="ssh")){ var ix=parseInt(di,10); openRowDetail(ix);
       var trs=$("tbl").getElementsByTagName("tr");
       for(var z=0;z<trs.length;z++){ var zi=trs[z].getAttribute("data-i");
         if(zi!=null&&zi!==""){ var rows=window.__viewRows||[]; var zr=rows[parseInt(zi,10)]; var base=zr?rowCls(zr):"";
@@ -5679,6 +5882,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Inventory tab</b> - a map of every key artifact (processes, network, logons, accounts, persistence, system, filesystem, logs, containers) showing present/absent, size, and an <b>open folder</b> link that opens the raw file in Explorer. The Persistence &amp; config inventory on Overview has the same open-folder links; click an artifact name there to view its contents inline.</li>
       <li><b>UI (v0.7):</b> the Processes table has a <b>Name</b> column and a <b>Tree view</b> toggle (collapsible parent/child hierarchy - click ▸/▾ to fold, a row for detail). <b>Logons</b> has User / Source / Result filters and a clickable link to each raw source log. <b>Events</b> has a min-score filter and a kind filter. Long tables keep their <b>header row frozen</b> while scrolling, and <b>Persistence &amp; system findings</b> shows a date/time column.</li>
       <li><b>Resizable columns</b> everywhere - drag the right edge of any column header (it highlights on hover); double-click the edge to reset. Widths persist per view.</li>
+      <li><b>SSH Keys tab (v1.1):</b> a dedicated inventory of the key material in the capture - <b>authorized_keys</b> entries (who can log IN, with source-restriction and forced-command flags), per-user <b>identity keys</b> (id_* private/public, with passphrase state), and <b>host keys</b> from /etc/ssh. A short key-id (base64 head…tail) lets you match the same key across accounts by eye; a <b>null-passphrase private key</b> is flagged (usable as-is if exfiltrated), as is an <b>unrestricted</b> or <b>forced-command</b> authorized_keys entry. Exports to CSV and appears in the report.</li>
       <li><b>1.0 (2026-07-18):</b> the app is now the <b>Linux UAC Capture Analyzer</b> (file: <code>Linux-UAC-Analyzer.hta</code>, repo: <code>bpmorris22/Linux-UAC-Capture-Analyzer</code>) - the "Linux" in the name is honest scoping: binary utmp decode and several parsers are Linux-specific, and non-Linux captures degrade gracefully to text sources with integrity notes. Sidecar filenames (<code>UAC-Triage-Tool.sqlecmd.txt</code>/<code>.colw.txt</code>) and the <code>_Processed\&lt;host&gt;\UAC</code> output convention are unchanged for continuity. Everything from v0.10-v0.17 ships in this release.</li>
       <li><b>Multiselect release (v0.17):</b> <b>every set-type dropdown filter is now a checkbox multiselect</b> (network location + type, logon user/source/result, process suspicion, events kind - one shared component, counts per value, clear link, active filters highlight the button). Users gains an <b>Enabled column + enabled-only filter</b> (interactive shell AND usable password or SSH keys; "?" when shadow wasn't collected) and a <b>By group view</b> (every group with GID + member accounts; click a group for the full list; per-user memberships stay in the account detail pane). "Boots" renamed <b>Boot history</b>; Network addresses gains a <b>Link UP/DOWN</b> column; <b>Recent package installs</b> gains a suspicious-only filter; every tab button now carries a tooltip; <b>Copy to Clipboard</b> (renamed from "Copy for case notes" in v0.17.1) covers the Users/Apache/Audit/group views too; v0.17.1 also drops the redundant "Run metadata" heading under System overview.</li>
       <li><b>Filters &amp; polish release (v0.16):</b> the Users account filter became a proper <b>multiselect dropdown</b> (checkbox panel); Processes gained a <b>suspicion-category filter</b> (by scoring tag, with counts, works in tree view too); Network gained a <b>Type column + filter</b> (SSH/HTTP/SMB/RDP/... derived from well-known ports) and <b>click-to-VirusTotal</b> on public remote IPs (launches your browser). "Capture overview" is now <b>System overview</b>, with a <b>Network addresses</b> sub-table (friendly adaptor labels: Ethernet / Wi-Fi / Docker bridge / VPN-tunnel...), an explicit <b>Host time zone</b> row, and a <b>host-TZ toggle on every surface that shows times</b> (Overview incl. boots, Persistence, Apps, Users) - all toggles stay in sync. Package-install and boot times now display <b>normalized UTC</b> (raw host-local strings in the tooltip) instead of raw log text. Apps tab: <b>Docker containers</b> renamed and moved to the top; Persistence tab: <b>config inventory first</b>, findings gain a <b>min-score filter</b> (down to "all incl. benign", capped at 2,000 rows). The filtered-report prompt covers the new filters.</li>

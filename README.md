@@ -27,29 +27,30 @@ UAC is excellent at *collecting* a Unix-like host. This tool is about *reading t
 
 ## What it shows
 
-Seventeen tabs:
+Eighteen tabs:
 
 | Tab | Built from | Highlights |
 |---|---|---|
 | **Overview** | `uac.log`, `os-release`, `uname`, `ip addr`, sar, cloud-init, `--list-boots` | System overview (distribution, kernel, host TZ), **network addresses** with friendly adaptor labels + link state, **observable-activity window**, **top external IPs** (geo-tagged), sar CPU summary, **boot history**, cloud-init baseline, dataset stat cards, cross-dataset **Top findings**, possible-ATT&CK mappings, **Generate report** |
 | **Inventory** | ~60 key artifacts | Present/absent map with open-folder links to every raw file |
+| **Security** | every parsed dataset + sshd/PAM/sudoers/sysctl/mounts/firewall/Apache config | Automated assessment scored **PASS / WARN / FAIL / N-A**: cross-dataset **attack-chain correlations** (brute-force that succeeded, public-IP / out-of-hours logins, download→chmod→exec, anti-forensics, persistence-after-intrusion, reused keys, timestomps) + a CIS/NIST-inspired **OS Hardening Posture** (root SSH, empty/blank passwords, extra UID-0, sudoers NOPASSWD, firewall on/off + non-standard listeners, SELinux/AppArmor, kernel sysctls, `/tmp` mount, NTP, patch recency, EOL distro) + an **Apache Hardening Posture** (CIS Apache 2.4). N-A when the source artifact wasn't collected — a logs-only or non-root capture never shows a false all-clear |
 | **Processes** | `ps` + `/proc` + `top` + `lsof` | Tree view, hidden-from-ps synthesis, deleted binaries, LD_PRELOAD/memfd/deleted-fd, web-shell parentage, **suspicion-category filter** |
 | **Network** | `ss` + `/proc/net` hex-decode | **Type column** (SSH/HTTP/SMB/RDP/… from ports), **Location column** (geo/ASN), public-IPs-only + multiselect filters, hidden-socket cross-check, **click a public IP → VirusTotal** |
-| **Apps** | apt/dpkg history, `docker ps`/inspect/diff | **Docker containers** (privileged / host-ns / sensitive mounts / implants) and package installs with attribution + suspicious-only filter |
+| **Apps** | apt/dpkg history, `docker ps`/inspect/diff | **Docker containers** (privileged / host-ns / sensitive mounts / implants) and package installs with attribution, **Action** filter, **User-Requested** filter + **USER-REQ** labels (human `apt install` vs unattended-upgrade/cron noise), and a suspicious-only filter |
 | **Users** | passwd, group, shadow, lastlog, homes | Per-account view with **Enabled** verdict, SSH-key and history counts, multiselect account filter, **By group** view |
 | **SSH Keys** | `~/.ssh`, `/etc/ssh`, null-passphrase check | Key inventory: **authorized_keys** (inbound access, source-restriction + forced-command flags), per-user **identity keys** (public/private, passphrase state), **host keys**; short key-id to match a key across accounts; null-passphrase private keys flagged |
-| **Logons** | auth.log (ISO + classic syslog), wtmp/btmp/lastlog, last/lastb | **Lateral movement panel** (known_hosts + ssh config + typed commands), **By source IP** aggregation, spray/brute-then-success detection, **brute-force-only** filter, multiselect filters |
+| **Logons** | auth.log (ISO + classic syslog), wtmp/btmp/lastlog, last/lastb | **Outbound SSH Connections** + **Inbound SSH & Interactive Logons** subheadings, **lateral-movement** evidence (known_hosts + ssh config + typed commands), **By source IP** aggregation, spray/brute-then-success detection, **brute-force-only** and **Non-Business Hours** filters, multiselect filters |
 | **Persistence** | 20+ mechanisms | Config inventory + scored command lines: cron, systemd units/timers (system+user), authorized_keys, rc.local, ld.so.preload, motd & APT hooks, modprobe, XDG autostart, shell startup files, **PAM module dirs** |
 | **Timeline** | TSK bodyfile | Full MAC-times, case-window filterable, **pivot ±15 min** target from any event |
 | **Events** | all time-stamped datasets | One scored axis: logons, packages, boots, journal anomalies, web, audit, history; notable-events filter; click a timestamp to pivot the Timeline |
-| **Apache logs** | apache2/nginx/httpd access logs | Initial-access hunting: POSTs to scripts, traversal/encoded payloads, tool user-agents |
+| **Apache Web Server** | apache2/httpd config (`/etc/apache2` \| `/etc/httpd`) + access logs | **Apache Configuration** summary (ServerTokens/Signature, TraceEnable, run-as user, modules, directory listing, mod_status) above the access logs; initial-access hunting on the logs: POSTs to scripts, traversal/encoded payloads, tool user-agents. Scored CIS checks on the Security tab |
 | **Audit** | auditd | `execve` records (hex args decoded, auid attribution) + login events — the closest Linux gets to process-creation telemetry |
-| **Actions** | bash/zsh/sh history | The full **executed-command record** per user, timestamped where the shell recorded times, scored (temp-path exec, decoder/pipe-to-shell, URL fetch, anti-forensics, elevation); per-user filter, pivot to Timeline |
+| **Actions** | bash/zsh/sh history | The full **executed-command record** per user, timestamped where the shell recorded times, scored across the **attacker playbook** (recon, credential access, scanners/offensive tools, download→chmod→exec, account & persistence edits, remote copy/SSH, anti-forensics, defence-evasion, elevation); per-user + **Non-Business Hours** filters, pivot to Timeline |
 | **Browser** | user-profile SQLite DBs | Hand-off to the SQLECmd wrapper (Zimmerman maps parse Linux-collected Chrome/Firefox DBs unchanged) |
 | **Logs** | journal filenames, syslog, kern.log, auditd summary | Log-integrity checks, journal rotation analysis, service inventory, notable events, optional **journal contents via WSL** |
 | **IOC hits** | tree sweep + `hash_executables` | Line-scan of the whole tree plus SHA1 matches against dormant on-disk executables |
 
-Optional **online geo/ASN enrichment** (checkbox, default on) tags public IPs with country + ASN across all views — only the bare IP list leaves the machine, and an `offline.txt` beside the app disables every outbound feature. Findings carry **possible MITRE ATT&CK technique mappings** (heuristic candidates, not confirmed behaviour). Rotated **`.gz` logs** are inflated automatically (into a per-run cache when the input is an extracted evidence folder — source evidence is never modified).
+A **Non-Business Hours** filter on the time-based tabs (Logons, Actions, Events, Apache logs, Timeline) isolates activity outside **Mon–Fri 08:00–18:00 host-local, weekends included** — the collector's own timezone, not the analyst's. Optional **online geo/ASN enrichment** (checkbox, default on) tags public IPs with country + ASN across all views — only the bare IP list leaves the machine, and an `offline.txt` beside the app disables every outbound feature. Findings carry **possible MITRE ATT&CK technique mappings** (heuristic candidates, not confirmed behaviour). Rotated **`.gz` logs** are inflated automatically (into a per-run cache when the input is an extracted evidence folder — source evidence is never modified).
 
 ![Logons tab — a brute-force that succeeded](screenshots/logon.png)
 

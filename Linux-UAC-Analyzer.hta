@@ -67,6 +67,7 @@
   .wrap{padding:12px 14px}
   .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px}
   .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
+  .subhead{margin:2px 0 6px;font-size:12px;font-weight:600;color:#c9d1d9;letter-spacing:.3px}
   label.fld{display:block;margin:6px 0 2px;font-size:11px;color:#8b949e}
   input.txt,select,textarea{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:5px 8px;font-size:13px;font-family:Consolas,monospace}
   input.wide{width:62%}
@@ -122,6 +123,15 @@
   .tag.ioc{background:#3a1416;color:#ff6b6b;border:1px solid #ff6b6b}
   .tag.sus{background:#3a2a10;color:#f0883e;border:1px solid #8a5a2a}
   .tag.info{background:#21262d;color:#8b949e;border:1px solid #30363d}
+  .tag.ok{background:#12261a;color:#3fb950;border:1px solid #238636}
+  .secroll{max-height:38vh}
+  .secbanner{display:flex;gap:14px;flex-wrap:wrap;margin:2px 0 12px}
+  .secpill{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 14px;min-width:96px}
+  .secpill .n{display:block;font-size:22px;font-weight:700;line-height:1}
+  .secpill .l{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:#8b949e}
+  .secpill.bad{border-color:#8a2a2a}.secpill.bad .n{color:#ff6b6b}
+  .secpill.warn{border-color:#8a5a2a}.secpill.warn .n{color:#f0883e}
+  .secpill.ok{border-color:#238636}.secpill.ok .n{color:#3fb950}
   .sc{display:inline-block;min-width:20px;text-align:center;font-weight:700;border-radius:6px;padding:1px 6px;margin-right:4px;font-size:11px}
   .sc0{background:#21262d;color:#8b949e}
   .sc1{background:#20301f;color:#7ee787}
@@ -217,6 +227,7 @@
         <button class="btn on" id="tabOverview" data-tab="overview" title="System overview: run metadata, dataset stats, top findings, sar CPU, network addresses, boot history, cloud-init">Overview</button>
         <button class="btn" id="tabInv" data-tab="inv" title="Map of every key UAC artifact: present/absent, size, open-folder links">UAC Inventory</button>
         <button class="btn" id="tabLogs" data-tab="logs" title="Log integrity, journal rotation analysis, syslog service inventory, notable events, WSL journal ingestion">Log Integrity</button>
+        <button class="btn" id="tabSecurity" data-tab="security" title="Automated security assessment: cross-dataset attack-chain correlations (brute-force success, download-chmod-exec, anti-forensics, persistence-after-intrusion) + CIS/NIST-inspired OS Hardening Posture (sshd/PAM/sudoers/accounts/firewall state &amp; rules/non-standard listeners/MAC/sysctls/mounts/NTP/patching) + Apache Hardening Posture, each scored PASS / WARN / FAIL / N-A (v1.6)">Security</button>
         <button class="btn" id="tabProc" data-tab="proc" title="Running processes (ps + top + per-pid /proc + lsof), scored; flat table or collapsible tree">Processes</button>
         <button class="btn" id="tabNet" data-tab="net" title="Sockets from ss + /proc/net hex-decode cross-check, scored; geo/ASN, service types, VirusTotal links">Network</button>
         <button class="btn" id="tabApps" data-tab="apps" title="Recent package installs + containers (v0.13)">Apps</button>
@@ -228,10 +239,27 @@
         <button class="btn" id="tabActions" data-tab="actions" title="Executed shell commands from per-user bash/zsh/sh history, timestamped where HISTTIMEFORMAT/zsh extended-history is set, scored (v1.2)">Actions</button>
         <button class="btn" id="tabEvents" data-tab="events" title="One time-sorted axis merging logons, packages, boots, journal anomalies, web, audit and history events; click a timestamp to pivot the Timeline">Events</button>
         <button class="btn" id="tabTime" data-tab="time" title="Filesystem timeline from the bodyfile (mtime/atime/ctime/crtime), scored; the pivot ±15 min target">Timeline</button>
-        <button class="btn" id="tabWeb" data-tab="web" title="Web-server access logs (apache/nginx/httpd combined format) - initial-access hunting">Apache logs</button>
+        <button class="btn" id="tabWeb" data-tab="web" title="Apache configuration summary (key directives from /etc/apache2 | /etc/httpd) + web-server access logs (apache/nginx/httpd combined format) - initial-access hunting">Apache Web Server</button>
         <button class="btn" id="tabAudit" data-tab="audit" title="auditd execve + login records when audit.log is in the capture (v0.11)">Audit</button>
         <button class="btn" id="tabIoc" data-tab="ioc" title="Tree-wide IOC/keyword sweep hits + dormant SHA1 matches from hash_executables">IOC hits</button>
       </div>
+    </div>
+
+    <!-- SECURITY (v1.6: automated correlations + hardening posture checklist) -->
+    <div class="card hide" id="secCard">
+      <span style="float:right">
+        <label style="font-size:12px;margin-right:10px" title="Render times in the collector's host time zone instead of UTC (applies everywhere)."><input type="checkbox" id="tzSec"> Host TZ</label>
+        <button class="btn violet" id="secExport" title="Export every security check (correlations + posture) to CSV.">Export &rarr; CSV</button>
+      </span>
+      <div class="tblhead">Security Assessment<span class="d">Automated cross-dataset checks over everything parsed - attack-chain correlations and a hardening-posture checklist. Each check is PASS / WARN / FAIL, or N/A when the source artifact was not collected. Heuristic leads to confirm, not verdicts - click a check to jump to its evidence.</span></div>
+      <div id="secBanner" class="secbanner"></div>
+      <h3>Compromise indicators &amp; attack-chain correlations <span class="muted" style="font-weight:400;text-transform:none">- joins across logons, shell history, timeline, accounts and keys that no single tab shows</span></h3>
+      <div class="scroll secroll"><table id="secCorrTbl"></table></div>
+      <h3 style="margin-top:16px">OS Hardening Posture <span class="muted" style="font-weight:400;text-transform:none">- CIS/NIST-inspired configuration &amp; account checks (sshd / PAM / sudoers / accounts / firewall state &amp; rules / listeners / MAC / sysctls / mounts / logging / containers)</span></h3>
+      <div class="scroll secroll"><table id="secPostTbl"></table></div>
+      <h3 style="margin-top:16px">Apache Hardening Posture <span class="muted" style="font-weight:400;text-transform:none">- CIS Apache HTTP Server 2.4-inspired checks over the ENABLED configuration (/etc/apache2 | /etc/httpd); N/A when the host runs no Apache</span></h3>
+      <div class="scroll secroll"><table id="secApacheTbl"></table></div>
+      <div class="muted" style="font-size:11px;margin-top:8px">Scope follows the collection profile: a check reads N/A when its artifact is absent (e.g. no /etc/shadow on a non-root capture, no process list on a logs-only one). Confirm every FAIL against the underlying tab before reporting.</div>
     </div>
 
     <!-- OVERVIEW -->
@@ -296,8 +324,12 @@
         <div class="scroll" style="max-height:30vh"><table id="ctrTbl"></table></div>
       </div>
       <div id="pkgWrap" style="margin-top:14px">
-        <label style="font-size:12px;float:right" title="Show only dual-use tooling watchlist installs (nmap, socat, xmrig, ...) and IOC-matching packages."><input type="checkbox" id="pkgSusOnly"> Suspicious Only</label>
-        <h3>Recent package installs <span class="muted" style="font-weight:400;text-transform:none" id="pkgWinLbl"></span></h3>
+        <div class="row" style="margin-bottom:6px">
+          <h3 style="display:inline;margin:0 12px 0 0">Recent package installs <span class="muted" style="font-weight:400;text-transform:none" id="pkgWinLbl"></span></h3>
+          <span class="mdwrap" data-udrop="1"><button class="btn" id="pkgActBtn" data-udrop="1" onclick="mdToggleBtn('pkgAct')" title="Filter package rows by action (install / upgrade / remove / purge / downgrade / reinstall)">Action: all &#9662;</button><div id="pkgActPanel" class="hide mdpanel" data-udrop="1"></div></span>
+          <label style="font-size:12px;margin-left:10px" title="Show only packages a human explicitly requested (apt install / Requested-By) - hides unattended-upgrade and cron-driven installs."><input type="checkbox" id="pkgUserReqOnly"> User-Requested Only</label>
+          <label style="font-size:12px;margin-left:10px" title="Show only dual-use tooling watchlist installs (nmap, socat, xmrig, ...) and IOC-matching packages."><input type="checkbox" id="pkgSusOnly"> Suspicious Only</label>
+        </div>
         <div class="scroll" style="max-height:38vh"><table id="pkgTbl"></table></div>
       </div>
       <div id="appsNone" class="muted hide" style="font-size:12px">No package-manager activity logs and no container runtimes in this capture.</div>
@@ -336,6 +368,7 @@
         <span class="mdwrap" data-udrop="1"><button class="btn" id="evKindBtn" data-udrop="1" onclick="mdToggleBtn('evKind')">kind: all ▾</button><div id="evKindPanel" class="hide mdpanel" data-udrop="1"></div></span>
         <label style="font-size:12px" title="Show only the notable-event kinds (OOM kills, promiscuous mode, USB attach, module loads, /etc/hosts pins, cron/unit summaries, boots, journal rotation anomalies)."><input type="checkbox" id="evNotable"> Notable Events</label>
         <label style="font-size:12px" title="Show only dual-use / offensive-tooling package installs (nmap, tcpdump, socat, ...) - the fastest way to spot recently installed dual-use tools."><input type="checkbox" id="evToolOnly"> Dual-Use Apps</label>
+        <label style="font-size:12px" title="Show only events timestamped OUTSIDE business hours in the collector host's local time (Mon-Fri 08:00-18:00; all weekend is out-of-hours; offset from uac.log, treated as UTC when the capture carried none)."><input type="checkbox" id="evNbh"> Non-Business Hours</label>
         <span class="sep"></span>
         <label style="font-size:12px"><input type="checkbox" id="evTz"> Host TZ</label>
         <span class="sep"></span>
@@ -393,6 +426,8 @@
           <input class="txt mono" id="dfrom" placeholder="from YYYY-MM-DD" style="width:140px" title="Filter timeline by mtime/ctime/crtime (UTC)">
           <span class="muted">&rarr;</span>
           <input class="txt mono" id="dto" placeholder="to YYYY-MM-DD" style="width:140px" title="Filter timeline by mtime/ctime/crtime (UTC)"></span>
+        <span id="nbhWrap" class="hide"><span class="sep"></span>
+          <label style="font-size:12px" title="Show only rows timestamped OUTSIDE business hours in the collector host's local time (offset from uac.log; treated as UTC when the capture carried no offset). Business hours = Mon-Fri 08:00-18:00; all weekend counts as out-of-hours. Untimestamped rows are hidden while this is on. Timeline: a row stays if ANY of its four times is out-of-hours. Logons By-source-IP: the aggregation is rebuilt from out-of-hours events only."><input type="checkbox" id="nbhOnly"> Non-Business Hours</label></span>
         <span class="sep"></span>
         <label style="font-size:12px" title="Show only rows scored suspicious (score ≥ 3)."><input type="checkbox" id="susOnly"> SUSPICIOUS ONLY</label>
         <span id="scoreWrap" class="hide"><span class="sep"></span>
@@ -415,9 +450,17 @@
       <div id="netChart" class="hide"></div>
       <!-- v0.14: lateral movement lives with the Logons tab (outbound half of the auth story) -->
       <div id="latWrap" class="hide">
-        <h3>Lateral movement <span class="muted" style="font-weight:400;text-transform:none">- Outbound SSH evidence: known_hosts destinations, ~/.ssh/config, ssh/scp/rsync commands in shell histories. CORROB = destination appears in known_hosts AND a typed command.</span></h3>
+        <h3>Lateral movement <span class="muted" style="font-weight:400;text-transform:none">- CORROB = destination appears in known_hosts AND a typed command.</span></h3>
+        <div class="subhead">Outbound SSH Connections <span class="muted" style="font-weight:400;font-size:11px">- where this host connected TO: known_hosts destinations, ~/.ssh/config, ssh/scp/rsync commands in shell histories</span></div>
         <div class="scroll" style="max-height:18vh;margin-bottom:8px"><table id="latTbl"></table></div>
       </div>
+      <!-- v1.6: Apache Web Server tab opens with the parsed configuration -->
+      <div id="apCfgWrap" class="hide">
+        <div class="subhead">Apache Configuration <span class="muted" style="font-weight:400;font-size:11px">- key directives from the ENABLED configuration; the scored CIS-style checks are on the Security tab</span></div>
+        <div class="scroll" style="max-height:30vh;margin-bottom:10px"><table id="apCfgTbl"></table></div>
+        <div class="subhead">Access Logs</div>
+      </div>
+      <div class="subhead hide" id="tblSubhead"></div>
       <div class="scroll" id="tblScroll"><table id="tbl"></table></div>
       <div class="muted" id="foot" style="font-size:11px;margin-top:6px">Times shown in UTC unless "host TZ" is ticked. Row tint = score (red ≥ 5, amber 3–4); red left-border = IOC hit. Click a row for detail. Case window (/from /to) filters the timeline only and never changes scores. Max <span id="maxrowLbl"></span> rows shown; export writes every parsed row matching the filters (note: the Timeline parse itself keeps at most 50,000 bodyfile rows - when that cap is hit the Overview says so; narrow /from /to to bring the rest into range).</div>
     </div>
@@ -433,7 +476,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.5.1";
+var APP_VERSION = "1.6.0";
 /* v0.9.4 - SQLECmd wrapper: offer to DOWNLOAD instead of hunt for it (operator request):
    - if the wrapper isn't found anywhere, a hand-off now offers to download the latest
      SQLECmd-Wrapper.hta from GitHub into THIS app's folder (browse stays as the offline
@@ -555,7 +598,9 @@ var APP_VERSION = "1.5.1";
 var TAR = "";                         // resolved tar.exe
 var TAR_VER = "";
 var QUERY = "";
-var MAXROWS = 5000;
+var MAXROWS = 10000;                  // v1.6: shared display cap (was 5000) - render-time only, for
+                                      //   IE/HTA performance; parses store more (timeline 50k, etc.)
+                                      //   and CSV export writes every filtered row uncapped.
 var LASTOUTDIR = "";
 var LASTROOT = "";                    // parse root (folder holding uac.log)
 var qTimer = null;
@@ -564,6 +609,9 @@ var BUSY = false;
 var SUSONLY = false;
 var SCOREMIN = 0;                     // v1.5.1: shared min-score filter (proc/net/time/web/actions)
 var SCORE_TABS = {proc:1, net:1, time:1, web:1, actions:1};
+var NBHONLY = false;                  // v1.6: non-business-hours filter (logon/actions/web/time; Events has its own)
+var NBH_TABS = {logon:1, actions:1, web:1, time:1};
+var SSHD_DIRS = null;                 // v1.6: full sshd_config directive map (set by parseConfigDrift)
 var DFROM = 0, DTO = 0;
 var IOCS = [];
 var DETREC = null, DETKIND = "";
@@ -809,6 +857,19 @@ function captureEpoch(){ var m=String(META.started||"").match(/^(\d{4})-(\d{2})-
   return Math.floor(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6])/1000)-(META.tzOffMin||0)*60; }
 function tzLabel(){ if(!TZVIEW || !META.tzOffMin) return "UTC";
   var s=META.tzOffMin, sign=s<0?"-":"+"; s=Math.abs(s); return "UTC"+sign+p2n(Math.floor(s/60))+p2n(s%60); }
+/* v1.6: non-business-hours test - true when the epoch's wall clock in the COLLECTOR HOST's local
+   time (offset from uac.log) falls outside Mon-Fri 08:00-17:59. All of the weekend is non-business.
+   Always computed host-local regardless of the display toggle; when the capture carried no offset
+   the host is treated as UTC. Rows with no timestamp return false (they cannot be placed inside or
+   outside business hours). */
+function isNbh(sec){ if(!sec) return false;
+  var d=new Date((sec+(META.tzOffMin||0)*60)*1000), hr=d.getUTCHours(), dow=d.getUTCDay();
+  if(dow===0 || dow===6) return true;   // Sunday / Saturday - whole day is out-of-hours
+  return hr<8 || hr>=18; }
+/* timeline rows carry four timestamps - out-of-hours if ANY of them is (mirrors the pivot rule) */
+function nbhTimeRow(r){ return isNbh(r.mtime)||isNbh(r.atime)||isNbh(r.ctime)||isNbh(r.crtime); }
+/* toolbar chip appended to the row count while the filter is on */
+function nbhNote(){ return ' · <span class="tag sus">non-business hours</span> <span class="muted">(weekends + outside Mon-Fri 08:00-18:00 '+(META.tzOffMin?'host-local':'UTC - capture carried no TZ offset')+'; untimestamped rows hidden)</span>'; }
 
 /* Run a batch script, wait, return {rc, log}. show=true → visible console. - family verbatim */
 function runBat(lines, show){
@@ -1261,6 +1322,7 @@ function parseCapture(root, input){
       ["/proc/net decode",           function(){ parseProcNet(root); }],
       ["auditd summary",             function(){ parseAudit(root); }],
       ["config drift",               function(){ parseConfigDrift(root); }],
+      ["apache configuration",       function(){ parseApacheConfig(root); }],
       ["web-server access logs",     function(){ parseWebLogs(root); }],
       ["user accounts table",        function(){ parseUsers(root); }],
       ["auditd detail",              function(){ parseAuditDetail(root); }],
@@ -2901,15 +2963,70 @@ function privKeyEncrypted(path){ var ls=privKeyFirst(path); var h=ls.join("\n");
    was configured to record them (bash HISTTIMEFORMAT -> "#<epoch>" lines; zsh EXTENDED_HISTORY ->
    ": <epoch>:<dur>;<cmd>"). Each line is scored with the same command heuristics. */
 var ACTIONS=[], ACTIONS_CAP=25000, ACTIONSCAP={shown:0,total:0};
+/* v1.6: much broader command scoring - the attacker playbook is recon -> cred access -> tool
+   transfer -> lateral/exfil -> persistence -> cleanup, and each stage should light up here.
+   Weights: outright hostile (revshell, shadow read, scanners, anti-forensics) reach 3+ alone;
+   dual-use admin commands (whoami, chmod +x, ssh out) tag at 1-2 so they read as breadcrumbs
+   and stack into a red row when chained (e.g. scp /etc/passwd root@ip:/tmp = 2+2+2). */
 function scoreActionRow(r){
   r.tags=[]; r.reasons=[]; r.score=0;
   var c=lc(r.cmd), h=iocHit(r.blob);
   if(h){ r.score+=3; r.tags.push("IOC"); r.reasons.push("IOC/keyword hit: "+h); }
   if(underTmp(r.cmd)){ r.score+=2; r.tags.push("TMPEXEC"); r.reasons.push("references a temp/ram path"); }
-  if(isShellCmd(r.cmd)){ r.score+=2; r.tags.push("SHELLCMD"); r.reasons.push("interactive/decoder shell one-liner"); }
+  if(isShellCmd(r.cmd)){ r.score+=3; r.tags.push("SHELLCMD"); r.reasons.push("reverse-shell / decoder / interactive-shell one-liner (nc, socat, sh -i, base64 -d, python -c, /dev/tcp)"); }
   else if(/\|\s*(ba|z)?sh\b/.test(c)){ r.score+=2; r.tags.push("PIPE-SH"); r.reasons.push("pipes streamed content into a shell"); }
-  if(/\b(curl|wget)\b/.test(c) && /https?:\/\//.test(c)){ r.score+=1; r.tags.push("NET-FETCH"); r.reasons.push("fetches from a URL"); }
-  if(/history\s+-c|unset\s+histfile|shred\b|>\s*\/var\/log|chattr\s+[+]i/.test(c)){ r.score+=2; r.tags.push("ANTIFOR"); r.reasons.push("anti-forensics command"); }
+  // ingress tool transfer: any URL fetch scores; a raw-IP or explicit-port URL, or a script/binary
+  // payload, is the classic staging-server download and scores harder
+  if(/\b(curl|wget|tftp)\b/.test(c) && /(https?|ftp):\/\//.test(c)){
+    r.score+=2; r.tags.push("NET-FETCH"); r.reasons.push("fetches from a URL");
+    if(/(https?|ftp):\/\/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(c) || /:\/\/[^\/\s]+:\d{2,5}(\/|\s|$)/.test(c)){ r.score+=1; r.reasons.push("URL targets a raw IP and/or explicit port - staging-server pattern"); }
+    else if(/\.(sh|py|pl|elf|bin|deb|rpm|tar\.gz|tgz)(\s|"|'|$)/.test(c)){ r.score+=1; r.reasons.push("URL delivers a script/binary payload"); }
+  }
+  // script dropped into a web root = web-shell shaped
+  if(/>>?\s*\S*\/(www|html|htdocs)\/\S*\.(php|jsp|aspx?|cgi)\b/.test(c) || /\b(cp|mv)\b[^|;]*\s\S*\.(php|jsp|aspx?|cgi)\s+\S*\/(www|html|htdocs)\//.test(c)){
+    r.score+=3; r.tags.push("WEBSHELL"); r.reasons.push("writes/copies a script into a web root - web-shell drop pattern"); }
+  // discovery / situational awareness (anchored to the start so mid-pipeline words don't fire)
+  if((/^(?:sudo\s+)?(whoami|id|who|w|lastlog|lastb|last|hostname|uname|pstree|ps|netstat|ss|ifconfig|arp|route|env|printenv|groups|history)\b/.test(c)
+     || /^(?:sudo\s+)?ip\s+(a|addr|r|route|neigh)\b/.test(c) || /^(?:sudo\s+)?crontab\s+-l\b/.test(c)
+     || /^(?:sudo\s+)?cat\s+\/etc\/(hosts|issue|os-release|crontab|group)\b/.test(c)) && !/history\s+-c/.test(c)){
+    r.score+=1; r.tags.push("RECON"); r.reasons.push("discovery / situational-awareness command (account, host, process or network enumeration)"); }
+  // credential & identity material
+  if(/\/etc\/g?shadow\b/.test(c)){ r.score+=3; r.tags.push("CRED-ENUM"); r.reasons.push("touches /etc/shadow - password-hash material"); }
+  else if(/\/etc\/passwd\b|\/etc\/sudoers\b/.test(c)){ r.score+=2; r.tags.push("CRED-ENUM"); r.reasons.push("touches /etc/passwd or sudoers - account/privilege enumeration"); }
+  else if(/\bid_(rsa|dsa|ecdsa|ed25519)\b/.test(c) || /\.ssh\/(authorized_keys|known_hosts|config)\b/.test(c)){ r.score+=2; r.tags.push("CRED-ENUM"); r.reasons.push("touches SSH key material / trust files"); }
+  // dual-use tooling: an install of a watchlist package is its own (lesser) signal than running it
+  var instM=c.match(/^(?:sudo\s+)?(?:apt(?:-get)?|yum|dnf|zypper|pacman|apk|snap|pip3?|pipx)\s+(?:-\S+\s+)*(?:install|add)\s+(.+)/);
+  var instHit=""; if(instM){ var toks=instM[1].split(/\s+/); for(var ti=0;ti<toks.length && !instHit;ti++){ instHit=suspPkg(toks[ti]); } }
+  if(instHit){ r.score+=2; r.tags.push("TOOL-INSTALL"); r.reasons.push("installs dual-use/offensive tooling: "+instHit); }
+  else if(/\b(nmap|masscan|zmap|arp-scan|netdiscover|pnscan|fping|nbtscan|enum4linux|onesixtyone)\b/.test(c)){ r.score+=3; r.tags.push("NET-SCAN"); r.reasons.push("network/service scanning tool"); }
+  else if(/\b(hydra|medusa|ncrack|hashcat|sqlmap|nikto|gobuster|feroxbuster|dirb|wfuzz|msfconsole|msfvenom|meterpreter|mimipenguin|linpeas|linenum|lse\.sh|pspy|chisel|ligolo|frpc|frps|xmrig|minerd|crackmapexec|netexec|secretsdump|proxychains)\b/.test(c)){ r.score+=3; r.tags.push("OFFTOOL"); r.reasons.push("offensive-security / attack tool"); }
+  // permission changes that arm a payload
+  if(/\bchmod\b[^|;&]*\bu\+s\b/.test(c) || /\bchmod\s+[24][0-7]{3}\b/.test(c)){ r.score+=3; r.tags.push("SUID"); r.reasons.push("sets the setuid/setgid bit - persistence/privesc primitive"); }
+  else if(/\bchmod\b[^|;&]*(\+x\b|[0-7]*7[0-7]{2}\b)/.test(c)){ r.score+=2; r.tags.push("CHMOD-X"); r.reasons.push("marks a file executable - typically arming a dropped payload"); }
+  // privesc surface enumeration
+  if(/\bfind\b[^|;]*-perm\b[^|;]*(4000|u=s)/.test(c) || /\bsudo\s+-l\b/.test(c) || /\bgetcap\b/.test(c)){ r.score+=2; r.tags.push("PRIVESC-HUNT"); r.reasons.push("hunts for privilege-escalation surface (SUID binaries, sudo rights, capabilities)"); }
+  // account manipulation
+  if(/^(?:sudo\s+)?(useradd|adduser|usermod|groupadd|groupmod|gpasswd|chpasswd|vipw|visudo)\b/.test(c)){ r.score+=3; r.tags.push("ACCT-CHG"); r.reasons.push("account / group / sudoers manipulation"); }
+  else if(/^(?:sudo\s+)?passwd\b/.test(c)){ r.score+=2; r.tags.push("ACCT-CHG"); r.reasons.push("password change"); }
+  // persistence edits
+  if(/>>?\s*\S*authorized_keys/.test(c)){ r.score+=3; r.tags.push("PERSIST"); r.reasons.push("writes to authorized_keys - SSH-key backdoor"); }
+  else if(/\bcrontab\s+(-e\b|[^-\s])/.test(c) || />>?\s*\S*(\.bashrc|\.profile|\.bash_profile|rc\.local)\b/.test(c) || /\btee\s+(-a\s+)?\/etc\/(cron|systemd)/.test(c)){ r.score+=2; r.tags.push("PERSIST"); r.reasons.push("edits a persistence location (cron / shell rc / rc.local / systemd)"); }
+  else if(/\bsystemctl\s+enable\b/.test(c) || /\bssh-keygen\b/.test(c)){ r.score+=1; r.tags.push("PERSIST"); r.reasons.push("persistence-adjacent (service enable / SSH key generation)"); }
+  // anti-forensics / log tampering
+  if(/history\s+-c|unset\s+histfile|histfile=|histsize=0|\bshred\b|>\s*\/var\/log|chattr\s+[+]i|\brm\b[^|;]*(history|\/var\/log)|\btruncate\b[^|;]*\/var\/log|ln\s+-sf?\s+\/dev\/null|touch\s+-(r|t|d)\b|journalctl\s+--vacuum|auditctl\s+-e\s*0|crontab\s+-r\b/.test(c)){ r.score+=3; r.tags.push("ANTIFOR"); r.reasons.push("anti-forensics: clears/redirects history, wipes or freezes logs, or timestomps"); }
+  // disabling security controls
+  if(/\bsetenforce\s+0\b/.test(c) || /\bsystemctl\s+(stop|disable)\s+(auditd|rsyslog|syslog|apparmor|firewalld|ufw)\b/.test(c) || /\bservice\s+(auditd|rsyslog|syslog|apparmor)\s+stop\b/.test(c) || /\bufw\s+disable\b/.test(c) || /\biptables\s+(-f\b|--flush)/.test(c)){ r.score+=2; r.tags.push("DEF-EVADE"); r.reasons.push("disables a logging/security control (SELinux, auditd, syslog, firewall)"); }
+  // remote copy / exfil
+  if(/\b(scp|rsync|sftp)\b[^|;]*\s\S+@\S+/.test(c) || /\btar\b[^|;]*\|\s*ssh\b/.test(c) || /\bcurl\b[^|;]*(--upload-file|--data-binary\s+@|-f\s+\S*@)/.test(c) || /\bwget\b[^|;]*--post-file/.test(c)){ r.score+=2; r.tags.push("EXFIL"); r.reasons.push("copies files to/from a remote host (possible exfil or tool transfer)"); }
+  // outbound SSH = lateral-movement breadcrumb (the Logons tab's Lateral panel corroborates)
+  if(/^(?:sudo\s+)?ssh\s/.test(c)){ var lroot=/\broot@/.test(c);
+    r.score+=(lroot?2:1); r.tags.push("LATERAL"); r.reasons.push("outbound SSH session"+(lroot?" as root":"")); }
+  // packet capture
+  if(/\b(tcpdump|tshark|dumpcap)\b/.test(c)){ r.score+=2; r.tags.push("SNIFF"); r.reasons.push("packet-capture / network-sniffing tool"); }
+  // kernel module load from the command line
+  if(/\b(insmod|rmmod)\b/.test(c) || /\bmodprobe\s+[^|;]*\.ko\b/.test(c)){ r.score+=2; r.tags.push("KMOD"); r.reasons.push("kernel-module load/unload typed at the shell (rootkit vector)"); }
+  // ad-hoc file server = staging
+  if(/\bpython[0-9.]*\s+-m\s+(http\.server|simplehttpserver)\b/.test(c) || /\bphp\s+-s\s/.test(c)){ r.score+=2; r.tags.push("NET-SERVE"); r.reasons.push("spins up an ad-hoc HTTP server (payload staging / exfil pickup)"); }
   if(/(^|\s)(sudo|pkexec)\s/.test(c) || /^su\b/.test(c)){ if(!hasTag(r,"SHELLCMD")){ r.tags.push("ELEVATE"); r.reasons.push("privilege-elevation command"); } }
 }
 function pushAction(user, shell, ep, cmd){
@@ -3106,7 +3223,19 @@ var MITRE={
   "SSHD-CFG":["T1098.004","SSH config weakened"],
   "PAM-CFG":["T1556.003","Modify Authentication Process: PAM"],
   "PAM-MOD":["T1556.003","Modify Authentication Process: non-standard PAM module"],
-  "LATERAL":["T1021.004","Remote Services: SSH (corroborated outbound)"]
+  "LATERAL":["T1021.004","Remote Services: SSH (corroborated outbound)"],
+  /* v1.6: Actions-tab command heuristics */
+  "RECON":["T1082","System/Account/Network Discovery commands"],
+  "CRED-ENUM":["T1003.008","OS Credential Dumping: /etc/passwd, /etc/shadow, SSH keys"],
+  "NET-SCAN":["T1046","Network Service Discovery (scanner execution)"],
+  "PRIVESC-HUNT":["T1548","Abuse Elevation Control: SUID/sudo/capability enumeration"],
+  "CHMOD-X":["T1222.002","File Permissions Modification (chmod +x)"],
+  "PERSIST":["T1053.003","Scheduled Task/Job: cron & startup-file edits"],
+  "DEF-EVADE":["T1562.001","Impair Defenses: disable security/logging controls"],
+  "EXFIL":["T1048","Exfiltration Over Alternative Protocol (remote copy)"],
+  "SNIFF":["T1040","Network Sniffing"],
+  "KMOD":["T1547.006","Boot/Logon Autostart: Kernel Modules"],
+  "NET-SERVE":["T1105","Ingress Tool Transfer: ad-hoc HTTP staging server"]
 };
 /* distinct techniques for a set of tags: [{id,name}] */
 function techsForTags(tags){ var seen={}, out=[]; for(var i=0;i<tags.length;i++){ var m=MITRE[tags[i]];
@@ -3192,6 +3321,7 @@ function parseConfigDrift(root){
   for(i=0;i<texts.length;i++){ var ls=String(texts[i]).split("\n");
     for(var j=0;j<ls.length;j++){ var ln=trimStr(ls[j]); if(!ln||ln.charAt(0)==="#") continue;
       m=ln.match(/^(\w+)\s+(.+)$/); if(m){ var k=m[1].toLowerCase(); if(directives[k]==null) directives[k]=trimStr(m[2]); } } }
+  SSHD_DIRS = texts.length ? directives : null;   // v1.6: Security-tab checks read the full directive map
   function ssh(k){ return directives[k]!=null?lc(directives[k]):null; }
   if(texts.length){
     if(ssh("permitrootlogin")==="yes") drift("sshd_config", "PermitRootLogin yes - direct root SSH login allowed", 3, "SSHD-CFG");
@@ -3227,6 +3357,58 @@ function drift(src, detail, score, tag){
   CONFIGDRIFT.push({src:src, detail:detail, score:score, tag:tag});
   pushPersFind(src, "config", detail, {score:score, tag:tag, reason:detail});
 }
+
+/* ---- v1.6: Apache configuration parse (feeds the Apache Web Server tab + Security checks) ----
+   Debian layout (/etc/apache2: apache2.conf + ports.conf + conf-/sites-/mods-enabled) and RHEL
+   layout (/etc/httpd: conf/httpd.conf + conf.d + conf.modules.d). Only ENABLED drop-ins are read,
+   so what's parsed is what the server actually runs. ${APACHE_RUN_USER} is resolved via envvars. */
+var APACHECFG=null;
+function parseApacheConfig(root){
+  APACHECFG=null;
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var flavor="", base="";
+  if(fso.FolderExists(jp(root,"[root]/etc/apache2"))){ flavor="apache2"; base="[root]/etc/apache2"; }
+  else if(fso.FolderExists(jp(root,"[root]/etc/httpd"))){ flavor="httpd"; base="[root]/etc/httpd"; }
+  else return;
+  var files=[], texts=[];
+  function addFile(rel){ var p=jp(root,rel); if(fso.FileExists(p)){ var t=readTextCapped(p); if(t){ files.push(rel); texts.push({rel:rel, text:t}); } } }
+  function addDir(rel, re){ var p=jp(root,rel); if(!fso.FolderExists(p)) return;
+    try{ var e=new Enumerator(fso.GetFolder(p).Files); for(;!e.atEnd();e.moveNext()){ var f=e.item(); if(re.test(f.Name+"")){ var t=readTextCapped(f.Path+""); if(t){ files.push(rel+"/"+f.Name); texts.push({rel:rel+"/"+f.Name, text:t}); } } } }catch(e2){} }
+  if(flavor==="apache2"){ addFile(base+"/apache2.conf"); addFile(base+"/ports.conf");
+    addDir(base+"/conf-enabled",/\.conf$/i); addDir(base+"/sites-enabled",/\.conf$/i); addDir(base+"/mods-enabled",/\.(conf|load)$/i); }
+  else { addFile(base+"/conf/httpd.conf"); addDir(base+"/conf.d",/\.conf$/i); addDir(base+"/conf.modules.d",/\.conf$/i); }
+  if(!texts.length) return;
+  var A={ present:true, flavor:flavor, base:base.replace("[root]",""), files:files.length,
+          tokens:"", signature:"", trace:"", user:"", group:"", listen:[], docroots:[],
+          sslproto:"", sslOn:false, indexes:[], overrideAll:[], statusOn:false, logging:false, modules:[], envUser:"" };
+  var ev=readTextCapped(jp(root, base+"/envvars"));
+  if(ev){ var em=String(ev).match(/APACHE_RUN_USER=([^\r\n]+)/); if(em) A.envUser=trimStr(em[1]); }
+  for(var x=0;x<texts.length;x++){ var rel=texts[x].rel, ls=String(texts[x].text).split("\n");
+    for(var i=0;i<ls.length;i++){ var ln=trimStr(ls[i]); if(!ln||ln.charAt(0)==="#") continue;
+      var m;
+      if((m=ln.match(/^ServerTokens\s+(\S+)/i))) A.tokens=m[1];
+      else if((m=ln.match(/^ServerSignature\s+(\S+)/i))) A.signature=m[1];
+      else if((m=ln.match(/^TraceEnable\s+(\S+)/i))) A.trace=m[1];
+      else if((m=ln.match(/^User\s+(\S+)/i))) A.user=m[1];
+      else if((m=ln.match(/^Group\s+(\S+)/i))) A.group=m[1];
+      else if((m=ln.match(/^Listen\s+(\S+)/i))){ if(!contains(A.listen,m[1])) A.listen.push(m[1]); }
+      else if((m=ln.match(/^DocumentRoot\s+(\S+)/i))){ var dr=m[1].replace(/"/g,""); if(!contains(A.docroots,dr)) A.docroots.push(dr); }
+      else if((m=ln.match(/^SSLProtocol\s+(.+)$/i))) A.sslproto=trimStr(m[1]);
+      else if(/^SSLEngine\s+on\b/i.test(ln)) A.sslOn=true;
+      else if((m=ln.match(/^LoadModule\s+(\S+)/i))){ var lm=m[1].replace(/_module$/i,""); if(!contains(A.modules,lm)) A.modules.push(lm); }
+      else if(/^(ErrorLog|CustomLog)\s/i.test(ln)) A.logging=true;
+      else if((m=ln.match(/^Options\s+(.+)$/i))){ if(/(^|\s)\+?Indexes(\s|$)/i.test(m[1]) && !contains(A.indexes,rel)) A.indexes.push(rel); }
+      else if(/^AllowOverride\s+All\b/i.test(ln)){ if(!contains(A.overrideAll,rel)) A.overrideAll.push(rel); }
+      else if(/SetHandler\s+server-status/i.test(ln)) A.statusOn=true;
+    }
+    var mm=rel.match(/mods-enabled[\/\\]([a-z0-9_]+)\.load$/i); if(mm && !contains(A.modules,mm[1])) A.modules.push(mm[1]);
+  }
+  if(A.user && /\$\{APACHE_RUN_USER\}/i.test(A.user) && A.envUser) A.user=A.envUser+" (via envvars)";
+  if(contains(A.modules,"status")) A.statusOn=true;
+  APACHECFG=A;
+  appendLog("Apache config: "+nf(files.length)+" file(s) parsed from "+A.base+" ("+flavor+").");
+}
+function contains(arr,v){ for(var i=0;i<arr.length;i++){ if(arr[i]===v) return true; } return false; }
 
 /* ---- unified Events timeline: merge time-stamped scored items onto one axis ---- */
 function pushEvent(ep, kind, score, label, src, tags){
@@ -3988,12 +4170,41 @@ var WCOLS=[
   {h:"User-Agent", tip:"Client user-agent (tool UAs like curl/sqlmap/nuclei are scored)", sk:function(r){return lc(r.ua);}, cell:function(r){return '<td class="mono muted" title="'+esc(r.ua)+'">'+esc(trunc(r.ua,40))+'</td>';}},
   {h:"Log", tip:"Which access-log file the line came from", sk:function(r){return r.src;}, cell:function(r){return '<td class="mono muted">'+esc(r.src)+'</td>';}}
 ];
+/* v1.6: Apache Configuration summary at the top of the Apache Web Server tab. Chips give the
+   at-a-glance verdict; the scored CIS-style versions of the same checks live on the Security tab. */
+function renderApacheCfg(){
+  showEl("apCfgWrap", TAB==="web" && !!(APACHECFG&&APACHECFG.present));
+  if(!APACHECFG||!APACHECFG.present){ try{ $("apCfgTbl").innerHTML=""; }catch(ea){} return; }
+  var A=APACHECFG;
+  function ok(){ return ' <span class="tag ok">OK</span>'; }
+  function warn(t){ return ' <span class="tag sus" title="'+esc(t)+'">REVIEW</span>'; }
+  var rows=[];
+  function row(k,v,chip,tip){ rows.push('<tr><td class="mono muted" style="white-space:nowrap">'+esc(k)+'</td><td class="mono" title="'+esc(tip||v)+'">'+esc(trunc(v,120))+(chip||"")+'</td></tr>'); }
+  row("Source", A.base+" ("+A.flavor+") · "+nf(A.files)+" enabled config file(s)","");
+  row("Runs as", (A.user||"(no User directive)")+(A.group?(" / "+A.group):""), (lc(A.user||"")==="root")?warn("Apache runs as root"):(A.user?ok():warn("verify the effective account")));
+  row("ServerTokens", A.tokens||"(unset - default Full)", lc(A.tokens)==="prod"?ok():warn("leaks version info - CIS: Prod"));
+  row("ServerSignature", A.signature||"(unset - default Off)", lc(A.signature)==="on"?warn("version footer on server pages"):ok());
+  row("TraceEnable", A.trace||"(unset - default On)", lc(A.trace)==="off"?ok():warn("HTTP TRACE enabled - XST surface"));
+  row("Listen", A.listen.length?A.listen.join(", "):"(none parsed)","");
+  row("DocumentRoot", A.docroots.length?A.docroots.join(", "):"(none parsed)","");
+  row("TLS", (contains(A.modules,"ssl")||A.sslOn)?("ssl module enabled"+(A.sslproto?(" · SSLProtocol "+A.sslproto):"")):"not configured - HTTP only",
+      (contains(A.modules,"ssl")||A.sslOn)?ok():warn("credentials/sessions travel in cleartext"));
+  row("Directory listing", A.indexes.length?("Options Indexes in: "+A.indexes.join(", ")):"off", A.indexes.length?warn("browsable directories"):ok());
+  row("AllowOverride All", A.overrideAll.length?A.overrideAll.join(", "):"(none)", A.overrideAll.length?warn(".htaccess override surface"):ok());
+  row("mod_status", A.statusOn?"enabled":"not enabled", A.statusOn?warn("verify /server-status is restricted to localhost"):ok());
+  row("Modules", nf(A.modules.length)+" enabled: "+A.modules.join(", "),"",A.modules.join(", "));
+  $("apCfgTbl").innerHTML='<thead><tr><th style="width:160px" title="Apache directive / attribute">Directive</th><th title="Effective value from the enabled configuration - REVIEW chips are scored on the Security tab">Value</th></tr></thead><tbody>'+rows.join("")+"</tbody>";
+  setupColResizeFor($("apCfgTbl"),"ap_cfg"); freezeById("apCfgTbl");
+}
 function renderWeb(){
+  renderApacheCfg();   // v1.6: configuration section above the logs
   var rows=[]; for(var i=0;i<WEBLOG.length;i++){ var r=WEBLOG[i];
     if(!passQ(r)) continue;
     if((DFROM||DTO) && r.epoch && !inDay(logonDay(r.epoch))) continue;
+    if(NBHONLY && !(r.epoch && isNbh(r.epoch))) continue;   // v1.6: non-business hours
     rows.push(r); }
   sortRows(rows,WCOLS,SORT.web); drawTable(WCOLS,rows,SORT.web,"web");
+  if(NBHONLY && WEBLOG.length) $("count").innerHTML+=nbhNote();
   if(!WEBLOG.length){
     $("tbl").innerHTML='<thead><tr><th>Web-Server Access Logs</th></tr></thead><tbody><tr><td class="muted">No apache2/nginx/httpd access logs in this capture (looked under [root]/var/log/{apache2,nginx,httpd}). Normal on hosts that are not web servers'+(PROFILE.logsOnly?"":"; also absent when the collection profile skipped /var/log subdirectories")+'.</td></tr></tbody>';
     $("count").innerHTML="0 rows"; return; }
@@ -4118,7 +4329,7 @@ function renderSshKeys(){
 }
 /* v1.2: Actions - executed shell-command history */
 var NCMDCOLS=[
-  {h:"Score / tags", tip:"Suspicion score plus tags - hover a tag for reasons (IOC, TMPEXEC, SHELLCMD, PIPE-SH, NET-FETCH, ANTIFOR, ELEVATE)", sk:function(r){return r.score;}, cell:function(r){return scoreCell(r);}},
+  {h:"Score / tags", tip:"Suspicion score plus tags - hover a tag for reasons (IOC, SHELLCMD, NET-FETCH, RECON, CRED-ENUM, NET-SCAN, OFFTOOL, CHMOD-X, SUID, PRIVESC-HUNT, ACCT-CHG, PERSIST, ANTIFOR, DEF-EVADE, EXFIL, LATERAL, SNIFF, KMOD, WEBSHELL, TMPEXEC, ELEVATE)", sk:function(r){return r.score;}, cell:function(r){return scoreCell(r);}},
   {h:"When", tip:"Command time when the shell recorded one (bash HISTTIMEFORMAT / zsh extended history) - '-' means the history file carried no timestamps; obeys the host-TZ toggle", sk:function(r){return r.epoch;}, cell:function(r){return '<td class="mono">'+esc(r.epoch?fmtTime(r.epoch,true):"-")+'</td>';}},
   {h:"User", tip:"Account whose shell history this command came from", sk:function(r){return lc(r.user);}, cell:function(r){return '<td class="mono">'+esc(r.user)+'</td>';}},
   {h:"Shell", tip:"Which history file (bash / zsh / sh / ash)", sk:function(r){return r.shell;}, cell:function(r){return '<td class="mono muted">'+esc(r.shell)+'</td>';}},
@@ -4132,8 +4343,10 @@ function renderActions(){
     if(!passQ(r)) continue;
     if(!mdPass("actUser", r.user)) continue;
     if((DFROM||DTO) && r.epoch && !inDay(logonDay(r.epoch))) continue;   // case window (only affects timestamped rows)
+    if(NBHONLY && !(r.epoch && isNbh(r.epoch))) continue;   // v1.6: non-business hours
     rows.push(r); }
   sortRows(rows,NCMDCOLS,SORT.actions); drawTable(NCMDCOLS,rows,SORT.actions,"actions");
+  if(NBHONLY && ACTIONS.length) $("count").innerHTML+=nbhNote();
   if(!ACTIONS.length){
     $("tbl").innerHTML='<thead><tr><th>Executed Bash Commands</th></tr></thead><tbody><tr><td class="muted">No shell command history in this capture - looked for per-user ~/.bash_history, ~/.zsh_history, ~/.sh_history, ~/.ash_history. A logs-only collection, a freshly-provisioned host, or accounts with HISTFILE disabled produce none. Anti-forensics (history -c / unset HISTFILE) also empties them - check the Persistence tab for that tell.</td></tr></tbody>';
     $("count").innerHTML="0 rows"; return; }
@@ -4141,6 +4354,8 @@ function renderActions(){
   $("count").innerHTML+=" · "+nf(withTs)+" timestamped"+(withTs===0?" (shells recorded no HISTTIMEFORMAT - order preserved, absolute times unknown)":"")
     +(ACTIONSCAP.total>ACTIONSCAP.shown?(' · <span class="tag sus">capped: '+nf(ACTIONSCAP.shown)+' of '+nf(ACTIONSCAP.total)+'</span>'):"");
 }
+/* v1.6: the LOGON subset with an out-of-hours timestamp (feeds By-source-IP under the NBH filter) */
+function nbhLogonSubset(){ var out=[],i; for(i=0;i<LOGON.length;i++){ if(LOGON[i].epoch && isNbh(LOGON[i].epoch)) out.push(LOGON[i]); } return out; }
 /* Logons by-source-IP aggregation - the brute-force triage view */
 function buildLogonByIp(src){
   var arr=src||LOGON;   // v0.14: optional source array so the filtered report can aggregate a subset
@@ -4180,26 +4395,27 @@ function renderLateral(){
     +'<th title="Which user\'s home the evidence came from">User</th>'
     +'<th title="Outbound destination host/IP - geo chip when enrichment is on">Destination</th>'
     +'<th title="The raw entry / command line (+timestamp when the history carries one)">Detail</th></tr></thead><tbody>';
-  for(var i=0;i<rows.length && i<200;i++){ var L=rows[i]; var rc=rowCls(L);
+  var LAT_CAP=1000;   // v1.6: raised from 200 (lateral rows are cheap and a busy jump host can exceed it)
+  for(var i=0;i<rows.length && i<LAT_CAP;i++){ var L=rows[i]; var rc=rowCls(L);
     h+='<tr'+(rc?(' class="'+rc+'"'):'')+'><td class="mono'+(rc?' first':'')+'">'+esc(L.kind)
       +(L.corrob?' <span class="tag sus" title="destination appears in known_hosts AND a typed ssh/scp command">CORROB</span>':'')+tagsHtml(L)+'</td>'
       +'<td class="mono">'+esc(L.user||"-")+'</td>'
       +'<td class="mono" title="'+esc(geoTip(L.dest))+'">'+esc(L.dest)+geoTag(L.dest)+'</td>'
       +'<td class="mono muted" title="'+esc(L.evidence)+'">'+esc(trunc(L.evidence,70))+(L.epoch?(' · '+esc(fmtTime(L.epoch,false))):'')+'</td></tr>'; }
-  if(rows.length>200) h+='<tr><td colspan="4" class="muted">'+nf(rows.length-200)+' more row(s) - export or search to narrow.</td></tr>';
+  if(rows.length>LAT_CAP) h+='<tr><td colspan="4" class="ioc">⚠ Maximum Rows Exceeded - '+nf(rows.length-LAT_CAP)+' more lateral-movement row(s) not shown (render cap '+nf(LAT_CAP)+'). Search above to narrow.</td></tr>';
   h+="</tbody>"; $("latTbl").innerHTML=h; setupColResizeFor($("latTbl"),"ov_lat"); freezeById("latTbl");
 }
 
 /* ---------- tab / render dispatch ---------- */
 function setTab(t, quiet){
   TAB=t;
-  var ids={overview:"tabOverview",inv:"tabInv",proc:"tabProc",net:"tabNet",logon:"tabLogon",users:"tabUsers",ssh:"tabSsh",persist:"tabPersist",time:"tabTime",events:"tabEvents",web:"tabWeb",audit:"tabAudit",actions:"tabActions",apps:"tabApps",browser:"tabBrowser",logs:"tabLogs",ioc:"tabIoc"};
+  var ids={overview:"tabOverview",security:"tabSecurity",inv:"tabInv",proc:"tabProc",net:"tabNet",logon:"tabLogon",users:"tabUsers",ssh:"tabSsh",persist:"tabPersist",time:"tabTime",events:"tabEvents",web:"tabWeb",audit:"tabAudit",actions:"tabActions",apps:"tabApps",browser:"tabBrowser",logs:"tabLogs",ioc:"tabIoc"};
   for(var k in ids){ if(ids.hasOwnProperty(k)){ $(ids[k]).className=(k===t)?"btn on":"btn"; } }
   var isOv=(t==="overview"), isLogs=(t==="logs"), isEv=(t==="events");
-  var isPersist=(t==="persist"), isApps=(t==="apps"), isBrowser=(t==="browser");
+  var isPersist=(t==="persist"), isApps=(t==="apps"), isBrowser=(t==="browser"), isSec=(t==="security");
   showEl("ovCard",isOv); showEl("logsCard",isLogs); showEl("eventsCard",isEv);
-  showEl("persistCard",isPersist); showEl("appsCard",isApps); showEl("browserCard",isBrowser);
-  showEl("tblCard", !isOv && !isLogs && !isEv && !isPersist && !isApps && !isBrowser);
+  showEl("persistCard",isPersist); showEl("appsCard",isApps); showEl("browserCard",isBrowser); showEl("secCard",isSec);
+  showEl("tblCard", !isOv && !isLogs && !isEv && !isPersist && !isApps && !isBrowser && !isSec);
   showEl("dateWrap", t==="time" || t==="logon" || t==="web" || t==="audit" || t==="actions");
   showEl("tzWrap", t==="time" || t==="logon" || t==="web" || t==="audit" || t==="users" || t==="actions");   // v0.16: Users has last-login times; v1.2: Actions has command times
   showEl("actFilters", t==="actions");   // v1.2
@@ -4210,11 +4426,16 @@ function setTab(t, quiet){
   showEl("netFilters", t==="net");
   showEl("usersFilters", t==="users");                       // v0.14
   showEl("latWrap", t==="logon" && LATERAL.length>0);        // v0.14: lateral movement lives on Logons
+  // v1.6: on Logons the main grid gets its own subheading, pairing with Outbound SSH Connections above
+  if(t==="logon"){ $("tblSubhead").innerHTML='Inbound SSH &amp; Interactive Logons <span class="muted" style="font-weight:400;font-size:11px">- authentication events INTO / on this host: SSH accepted/failed, console, su/sudo, PAM sessions</span>'; }
+  showEl("tblSubhead", t==="logon");
+  showEl("apCfgWrap", t==="web" && !!(APACHECFG&&APACHECFG.present));   // v1.6: Apache Configuration section
   setTblHeading(t);                                          // v1.4: per-tab heading + description
   showEl("logonChart", t==="logon");                         // v1.5: charts
   showEl("netChart", t==="net");
   showEl("scoreWrap", !!SCORE_TABS[t]);                       // v1.5.1: min-score filter
-  if(!isOv && !isLogs && !isEv && !isPersist && !isApps && !isBrowser){ $("q").value=QUERY; }
+  showEl("nbhWrap", !!NBH_TABS[t]);                           // v1.6: non-business-hours filter
+  if(!isOv && !isLogs && !isEv && !isPersist && !isApps && !isBrowser && !isSec){ $("q").value=QUERY; }
   if(!quiet) render();
 }
 /* v1.4: heading + one-line description shown above every table-card tab */
@@ -4226,9 +4447,9 @@ var TBL_HEADINGS={
   logon:["Logon Events","Authentication events from auth.log, wtmp/btmp and last/lastb - SSH accepted/failed, sudo, pkexec, PAM sessions, account changes. Lateral-movement evidence sits above; By source IP aggregates for brute-force triage."],
   ssh:["SSH Keys","Every SSH key in the capture: authorized_keys (who can log IN), per-user identity keys (public/private, passphrase state) and host keys - with source restrictions, forced commands and null-passphrase flags."],
   time:["Filesystem Timeline","MAC-times for every file from the TSK bodyfile (modify / access / change / create), scored for temp-path executables, hidden paths and setuid bits. The pivot ±15 min target; narrow with the case window on a large capture."],
-  web:["Web-Server Access Logs","Apache2 / nginx / httpd access logs (combined format), scored for initial-access hunting: POSTs to script URIs, traversal and encoded payloads, and tool user-agents."],
+  web:["Apache Web Server","Apache configuration (key directives from the enabled config) followed by the access logs - apache2 / nginx / httpd combined format, scored for initial-access hunting: POSTs to script URIs, traversal and encoded payloads, and tool user-agents. Scored config checks live on the Security tab."],
   audit:["Audited Records","Auditd execve records (with hex-decoded arguments and auid attribution) and USER_AUTH / USER_LOGIN events - the closest Linux gets to process-creation telemetry, present only when the host ran auditd."],
-  actions:["Executed Bash Commands","The full executed-command record from each user's bash/zsh/sh history - timestamped where the shell recorded times - scored for temp-path exec, decoder/pipe-to-shell one-liners, URL fetches, anti-forensics and elevation."],
+  actions:["Executed Bash Commands","The full executed-command record from each user's bash/zsh/sh history - timestamped where the shell recorded times - scored across the attacker playbook: recon, credential access, downloads, scanners/offensive tools, chmod +x, account & persistence edits, remote copy/SSH, anti-forensics and elevation."],
   ioc:["IOC Hits","Every line in the capture tree that matched an operator-supplied IOC/keyword term, plus SHA1 matches against on-disk executables (dormant implants). Empty until you load IOC terms."]
 };
 function setTblHeading(t){
@@ -4240,6 +4461,7 @@ function setTblHeading(t){
 }
 function render(){
   if(TAB==="overview"){ renderOverview(); return; }
+  if(TAB==="security"){ renderSecurity(); return; }
   if(TAB==="logs"){ renderLogs(); return; }
   if(TAB==="events"){ renderEvents(); return; }
   if(TAB==="persist"){ renderPersistTab(); return; }
@@ -4635,7 +4857,9 @@ function renderPersFind(){
   showEl("persFindWrap", rows.length>0);
   if(!rows.length){ $("pfTbl").innerHTML=""; return; }
   rows.sort(function(a,b){ return b.score-a.score; });
-  if(rows.length>2000){ rows=rows.slice(0,2000); }   // "all" on a busy host stays renderable
+  // v1.6: this cap was SILENT - a busy host with "all incl. benign" selected dropped everything
+  // past 2000 with no notice. Keep the perf cap but DISCLOSE it (row below + warning chip).
+  var PF_CAP=2000, pfTotal=rows.length; if(rows.length>PF_CAP){ rows=rows.slice(0,PF_CAP); }
   var h='<thead><tr><th title="Suspicion score - hover the tags for reasons">Score</th>'
     +'<th title="Timestamp when the source carries one (histories with HISTTIMEFORMAT)">When</th>'
     +'<th title="Which persistence file/artifact the command line came from">Source</th>'
@@ -4647,32 +4871,52 @@ function renderPersFind(){
       +'<td class="mono muted" title="'+esc(r.src)+'">'+esc(trunc(r.src,34))+'</td>'
       +'<td class="mono muted">'+esc(r.detail)+'</td>'
       +'<td class="mono" title="'+esc(r.cmd)+'">'+esc(trunc(r.cmd,110))+'</td></tr>'; }
+  if(pfTotal>PF_CAP) h+='<tr><td colspan="5" class="ioc">⚠ Maximum Rows Exceeded - '+nf(pfTotal-PF_CAP)+' more finding(s) at this score threshold are not shown (render cap '+nf(PF_CAP)+'). Raise the score filter above to narrow, or read the raw persistence artifacts from the Persistence &amp; config inventory / UAC Inventory tabs.</td></tr>';
   if(hidden>0) h+='<tr><td colspan="5" class="muted">'+nf(hidden)+' persistence command line(s) below the score threshold (change the score filter above to see them)</td></tr>';
   h+="</tbody>"; $("pfTbl").innerHTML=h; setupColResizeFor($("pfTbl"),"ov_persfind"); freezeById("pfTbl");
 }
+/* v1.6: a package is "user-requested" when apt history attributes it to a real actor (Requested-By
+   or a typed `apt install`), as opposed to unattended-upgrade / cron-driven / dpkg-fallback rows. */
+function pkgUserRequested(p){ return !!(p.by && p.by!=="unattended-upgrade" && p.by!=="root/cron"); }
 function renderPackages(){
   showEl("pkgWrap", PKGS.length>0);
   var manual=0, susN=0; for(var z=0;z<PKGS.length;z++){ var pz=PKGS[z]; if(pz.susp) susN++;
-    if(pz.by && pz.by!=="unattended-upgrade" && pz.by!=="root/cron") manual++; }
+    if(pkgUserRequested(pz)) manual++; }
   $("pkgWinLbl").innerHTML=((DFROM||DTO)?"- within case window":"- all (set /from /to to focus)")
     +(susN?(' <span class="tag sus">'+susN+' suspicious</span>'):'')
-    +(manual?(' <span class="tag info">'+manual+' user-requested</span>'):(PKGS.length?' <span class="tag info">all automated</span>':''));
+    +(manual?(' <span class="tag ok">'+manual+' user-requested</span>'):(PKGS.length?' <span class="tag info">all automated</span>':''));
   if(!PKGS.length){ $("pkgTbl").innerHTML=""; return; }
-  // v0.17: suspicious-only filter (watchlist tooling + IOC matches)
-  var susOnly2=false; try{ susOnly2=$("pkgSusOnly").checked; }catch(eps){}
-  var PLIST=PKGS;
-  if(susOnly2){ PLIST=[]; for(var z2=0;z2<PKGS.length;z2++){ if(PKGS[z2].susp || iocHit(PKGS[z2].blob)) PLIST.push(PKGS[z2]); } }
+  // v1.6: Action multiselect filter (install / upgrade / remove / purge / ...)
+  var actCounts={}; for(var za=0;za<PKGS.length;za++){ actCounts[PKGS[za].action]=(actCounts[PKGS[za].action]||0)+1; }
+  mdReg("pkgAct","Action"); mdPopulate("pkgAct", actCounts);
+  // v0.17: suspicious-only filter (watchlist tooling + IOC matches); v1.6: user-requested-only filter
+  var susOnly2=false, urOnly=false; try{ susOnly2=$("pkgSusOnly").checked; urOnly=$("pkgUserReqOnly").checked; }catch(eps){}
+  var PLIST=[];
+  for(var z2=0;z2<PKGS.length;z2++){ var pz2=PKGS[z2];
+    if(susOnly2 && !(pz2.susp || iocHit(pz2.blob))) continue;
+    if(urOnly && !pkgUserRequested(pz2)) continue;
+    if(!mdPass("pkgAct", pz2.action)) continue;
+    PLIST.push(pz2); }
   var h='<thead><tr><th title="Install/change time (normalized from the host-local apt/dpkg logs; obeys the host-TZ toggle)">When ('+esc(tzLabel())+')</th>'
     +'<th title="install / upgrade / remove / purge / downgrade">Action</th>'
     +'<th title="Package name (SUS chip = dual-use tooling watchlist; IOC = matched your IOC list)">Package</th>'
-    +'<th title="Requested-By from apt history - separates a human apt install from unattended upgrades">Requested by</th></tr></thead><tbody>';
-  for(var i=0;i<PLIST.length && i<300;i++){ var p=PLIST[i]; var isIoc=iocHit(p.blob); var cls=isIoc?"ioc row-flag":(p.susp?"row-warn":"");
+    +'<th title="Requested-By from apt history - a USER-REQ chip marks a package a human explicitly asked for, vs unattended-upgrade / cron noise">Requested by</th></tr></thead><tbody>';
+  // v1.6.0 fix (operator-reported): the old render loop capped at 300 rows SILENTLY - with PKGS
+  // sorted newest-first, a wall of unattended-upgrade rows pushed genuine user-requested installs
+  // past the cut, so they only appeared once an Action filter thinned the list. Cap raised to
+  // PKG_RENDER_CAP (far above any realistic apt history) and now DISCLOSED when hit.
+  var PKG_RENDER_CAP=5000, pShown=PLIST.length>PKG_RENDER_CAP?PKG_RENDER_CAP:PLIST.length;
+  for(var i=0;i<pShown;i++){ var p=PLIST[i]; var isIoc=iocHit(p.blob); var cls=isIoc?"ioc row-flag":(p.susp?"row-warn":"");
     var pep=pkgEpoch(p);   // v0.16: display normalized UTC/host-TZ time, not the raw host-local log string
+    var ureq=pkgUserRequested(p);
     h+='<tr'+(cls?(' class="'+cls+'"'):'')+'><td class="mono'+((isIoc||p.susp)?' first':'')+'" title="'+esc(p.mgr)+' raw: '+esc(p.when)+'">'+esc(pep?fmtTime(pep,false):p.when)+'</td>'
       +'<td class="mono muted">'+esc(p.action)+'</td>'
       +'<td class="mono">'+esc(p.pkg)+(p.susp?' <span class="tag sus" title="offensive/dual-use tooling">SUS</span>':'')+(isIoc?' <span class="tag ioc">IOC</span>':'')+'</td>'
-      +'<td class="mono muted" title="'+esc(p.by)+'">'+esc(trunc(p.by||"-",22))+'</td></tr>'; }
+      +'<td class="mono muted" title="'+esc(p.by||"(automated / no attribution)")+'">'+(ureq?'<span class="tag ok" title="Explicitly requested by a user (Requested-By / apt install) - not an unattended upgrade or cron job">USER-REQ</span> ':'')+esc(trunc(p.by||"-",22))+'</td></tr>'; }
+  if(PLIST.length>PKG_RENDER_CAP) h+='<tr><td colspan="4" class="ioc">⚠ Maximum Rows Exceeded - '+nf(PLIST.length-PKG_RENDER_CAP)+' more package row(s) not shown (render cap '+nf(PKG_RENDER_CAP)+'). Narrow with the Action filter, User-Requested / Suspicious Only, or a /from /to case window.</td></tr>';
   h+="</tbody>"; $("pkgTbl").innerHTML=h; setupColResizeFor($("pkgTbl"),"ov_pkg"); freezeById("pkgTbl");
+  var pfCount=(susOnly2||urOnly||mdSet("pkgAct"))?(nf(PLIST.length)+" of "+nf(PKGS.length)+" package rows shown"):(nf(PKGS.length)+" package row"+(PKGS.length===1?"":"s"));
+  try{ $("pkgWinLbl").innerHTML+=' <span class="muted" style="font-size:11px">('+esc(pfCount)+')</span>'; }catch(epc){}
 }
 function renderContainers(){
   showEl("ctrWrap", CONTAINERS.length>0);
@@ -4687,6 +4931,391 @@ function renderContainers(){
       +'<td class="mono" title="'+esc(c.image)+'">'+esc(trunc(c.image,28))+'</td><td class="mono muted" title="'+esc(c.cmd)+'">'+esc(trunc(c.cmd,26))+'</td>'
       +'<td class="mono muted">'+esc(trunc(c.status,20))+'</td><td class="mono">'+esc(c.names)+'</td></tr>'; }
   h+="</tbody>"; $("ctrTbl").innerHTML=h; setupColResizeFor($("ctrTbl"),"ov_ctr"); freezeById("ctrTbl");
+}
+
+/* ============ v1.6 - Security tab: automated correlations + hardening posture ============
+   Everything here is derived from data ALREADY parsed into the globals (LOGON, ACTIONS, TIMEL,
+   USERS, SSHKEYS, CONFIGDRIFT, CONTAINERS, NET, PROC, GEO, PROFILE) plus a couple of cheap direct
+   reads (sudoers). Computed fresh on every render so geo enrichment and IOC re-apply are reflected.
+   Status vocabulary: FAIL (confirmed-ish indicator / weakness), WARN (worth a look), PASS (checked,
+   clean), NA (the source artifact was not collected - never a false all-clear). sev drives the
+   banner roll-up; only FAIL/WARN carry sev. Findings are LEADS to confirm on the underlying tab. */
+function computeSecurity(){
+  var F=[]; var i,j;
+  /* add(cat,status,sev,name,evidence,opt{ep,tab}) */
+  function add(cat,status,sev,name,evidence,opt){ opt=opt||{};
+    F.push({cat:cat,status:status,sev:sev||0,name:name,evidence:evidence||"",ep:opt.ep||0,tab:opt.tab||""}); }
+  function have(arr){ return arr && arr.length>0; }
+  // ---- shared derived sets ----
+  var pubAccept=[], nbhAccept=[], firstSuspLogonEp=0, i2;
+  for(i2=0;i2<LOGON.length;i2++){ var L=LOGON[i2];
+    var okv=(L.result==="accepted"||L.result==="session");
+    if(okv && L.ip && !ipIsLocal(L.ip)) pubAccept.push(L);
+    if(okv && L.epoch && isNbh(L.epoch)) nbhAccept.push(L);
+    if(L.epoch && L.score>=3 && (!firstSuspLogonEp || L.epoch<firstSuspLogonEp)) firstSuspLogonEp=L.epoch;
+  }
+  // per-user action tag presence (for chain correlations)
+  var byUserTags={}, actByTag={};
+  for(i2=0;i2<ACTIONS.length;i2++){ var a=ACTIONS[i2], u=a.user||"?";
+    if(!byUserTags[u]) byUserTags[u]={};
+    for(j=0;j<a.tags.length;j++){ byUserTags[u][a.tags[j]]=true; actByTag[a.tags[j]]=(actByTag[a.tags[j]]||0)+1; } }
+  function actionsHaveTag(t){ return actByTag[t]>0; }
+
+  /* ======================= CORRELATIONS ======================= */
+  var CO="correlation";
+  // C1 brute-force that SUCCEEDED
+  if(have(LOGON)){
+    var agg=buildLogonByIp(), brk=null;
+    for(i2=0;i2<agg.length;i2++){ if(agg[i2].fails>=BRUTE_THRESH && agg[i2].okc>0){ if(!brk||agg[i2].fails>brk.fails) brk=agg[i2]; } }
+    if(brk) add(CO,"FAIL",3,"Brute-force that succeeded","Source "+brk.ip+(geoTip(brk.ip)?(" ["+geoTip(brk.ip)+"]"):"")+" had "+nf(brk.fails)+" failed logins then "+nf(brk.okc)+" success(es); users tried: "+trunc(brk.userList,80),{ep:brk.last,tab:"logon"});
+    else add(CO,"PASS",0,"Brute-force that succeeded","No source IP shows "+BRUTE_THRESH+"+ failures followed by a success.",{tab:"logon"});
+  } else add(CO,"NA",0,"Brute-force that succeeded","No logon events collected.");
+  // C2 successful login from a public IP
+  if(have(LOGON)){
+    if(pubAccept.length){ var pc={}; for(i2=0;i2<pubAccept.length;i2++){ pc[pubAccept[i2].ip]=1; } var pcn=0,pkey; for(pkey in pc){ if(pc.hasOwnProperty(pkey)) pcn++; }
+      add(CO,"WARN",2,"Interactive login from a public IP",nf(pubAccept.length)+" accepted logon(s) from "+nf(pcn)+" public source IP(s), e.g. "+pubAccept[0].user+"@"+pubAccept[0].ip+(geoTip(pubAccept[0].ip)?(" ["+geoTip(pubAccept[0].ip)+"]"):""),{ep:pubAccept[0].epoch,tab:"logon"}); }
+    else add(CO,"PASS",0,"Interactive login from a public IP","All accepted logons are from private / local addresses.",{tab:"logon"});
+  } else add(CO,"NA",0,"Interactive login from a public IP","No logon events collected.");
+  // C3 successful login outside business hours
+  if(have(LOGON)){
+    if(nbhAccept.length) add(CO,"WARN",2,"Login outside business hours",nf(nbhAccept.length)+" accepted logon(s) outside Mon-Fri 08:00-18:00 host-local, e.g. "+nbhAccept[0].user+(nbhAccept[0].ip?("@"+nbhAccept[0].ip):"")+" at "+fmtTime(nbhAccept[0].epoch,true)+" "+tzLabel(),{ep:nbhAccept[0].epoch,tab:"logon"});
+    else add(CO,"PASS",0,"Login outside business hours","No accepted logons fall outside business hours (or none carry a timestamp).",{tab:"logon"});
+  } else add(CO,"NA",0,"Login outside business hours","No logon events collected.");
+  // C4 offensive tooling / reverse shell executed
+  if(have(ACTIONS)){
+    var offTags=["SHELLCMD","OFFTOOL","NET-SCAN","PIPE-SH","WEBSHELL"], offHit="",offN=0,ot;
+    for(ot=0;ot<offTags.length;ot++){ if(actByTag[offTags[ot]]){ offN+=actByTag[offTags[ot]]; if(!offHit) offHit=offTags[ot]; } }
+    if(offN) add(CO,"FAIL",3,"Offensive tooling / reverse shell run",nf(offN)+" shell-history command(s) tagged "+offTags.join("/")+" (first: "+offHit+") - reverse shells, scanners, web-shell drops or attack tools were typed on this host.",{tab:"actions"});
+    else add(CO,"PASS",0,"Offensive tooling / reverse shell run","No reverse-shell / scanner / offensive-tool commands in shell history.",{tab:"actions"});
+  } else add(CO,"NA",0,"Offensive tooling / reverse shell run","No shell history collected.");
+  // C5 download -> chmod +x -> execute chain (same user)
+  if(have(ACTIONS)){
+    var chainU=""; for(var uu in byUserTags){ if(!byUserTags.hasOwnProperty(uu)) continue;
+      var tg=byUserTags[uu]; if((tg["NET-FETCH"]) && (tg["CHMOD-X"]||tg["SUID"])){ chainU=uu; break; } }
+    if(chainU) add(CO,"FAIL",3,"Download → make-executable chain","User '"+chainU+"' both fetched a file over the network (NET-FETCH) and marked a file executable (CHMOD-X) in shell history - the classic staged-payload sequence.",{tab:"actions"});
+    else add(CO,"PASS",0,"Download → make-executable chain","No single user shows a download followed by a chmod +x in shell history.",{tab:"actions"});
+  } else add(CO,"NA",0,"Download → make-executable chain","No shell history collected.");
+  // C6 anti-forensics / defence evasion
+  var afN=0; if(have(ACTIONS)){ afN+=(actByTag["ANTIFOR"]||0)+(actByTag["DEF-EVADE"]||0); }
+  for(i2=0;i2<PERSFIND.length;i2++){ if(hasTag(PERSFIND[i2],"ANTIFOR")) afN++; }
+  if(have(ACTIONS)||have(PERSFIND)){
+    if(afN) add(CO,"FAIL",3,"Anti-forensics / log tampering",nf(afN)+" command(s) or finding(s) that clear history, wipe/redirect logs, timestomp, or disable auditing/SELinux/firewall.",{tab:"actions"});
+    else add(CO,"PASS",0,"Anti-forensics / log tampering","No history-clearing, log-wiping or control-disabling commands observed.",{tab:"actions"});
+  } else add(CO,"NA",0,"Anti-forensics / log tampering","No shell history or persistence findings collected.");
+  // C7 account created / modified via shell
+  if(have(ACTIONS)){
+    if(actByTag["ACCT-CHG"]) add(CO,"FAIL",3,"Account created / modified from a shell",nf(actByTag["ACCT-CHG"])+" account-manipulation command(s) in shell history (useradd / usermod / passwd / visudo / gpasswd).",{tab:"actions"});
+    else add(CO,"PASS",0,"Account created / modified from a shell","No useradd/usermod/visudo-class commands in shell history.",{tab:"actions"});
+  } else add(CO,"NA",0,"Account created / modified from a shell","No shell history collected.");
+  // C8 persistence file modified AFTER the first suspicious logon
+  if(have(TIMEL) && firstSuspLogonEp){
+    var persRe=/\/(etc\/cron|etc\/systemd\/system|lib\/systemd\/system|etc\/rc\.local|\.ssh\/authorized_keys|etc\/init\.d|etc\/ld\.so\.preload|etc\/update-motd\.d|etc\/profile\.d)/i, ph=null, phN=0;
+    for(i2=0;i2<TIMEL.length;i2++){ var tr=TIMEL[i2]; if(!persRe.test(tr.path)) continue;
+      if(tr.mtime>firstSuspLogonEp || tr.crtime>firstSuspLogonEp){ phN++; if(!ph||(tr.mtime>ph.mtime)) ph=tr; } }
+    if(ph) add(CO,"FAIL",3,"Persistence changed after suspicious logon",nf(phN)+" persistence path(s) modified after the first suspicious logon ("+fmtTime(firstSuspLogonEp,false)+"). Latest: "+trunc(ph.path,70)+" @ "+fmtTime(ph.mtime,true),{ep:ph.mtime,tab:"time"});
+    else add(CO,"PASS",0,"Persistence changed after suspicious logon","No cron / systemd / authorized_keys / rc.local mtimes fall after the first suspicious logon.",{tab:"time"});
+  } else if(!have(TIMEL)) add(CO,"NA",0,"Persistence changed after suspicious logon","No filesystem timeline (bodyfile) collected.");
+  else add(CO,"NA",0,"Persistence changed after suspicious logon","No suspicious logon to anchor against.");
+  // C9 data staging / exfil
+  if(have(ACTIONS)||have(TIMEL)){
+    var exN=have(ACTIONS)?(actByTag["EXFIL"]||0):0, arch=null;
+    if(have(TIMEL)){ for(i2=0;i2<TIMEL.length;i2++){ var tt=TIMEL[i2];
+      if(/\.(tar|tar\.gz|tgz|zip|gz|7z)$/i.test(tt.path) && /\/(tmp|dev\/shm|var\/tmp|run)\//i.test(tt.path)){ arch=tt; break; } } }
+    if(exN||arch) add(CO,"WARN",2,"Data staging / exfiltration",[exN?(nf(exN)+" remote-copy command(s) (scp/rsync/curl-upload)"):"",arch?("archive staged under a temp path: "+trunc(arch.path,60)):""].join(exN&&arch?"; ":""),{ep:arch?arch.mtime:0,tab:exN?"actions":"time"});
+    else add(CO,"PASS",0,"Data staging / exfiltration","No remote-copy commands and no archives staged under temp paths.",{tab:"actions"});
+  } else add(CO,"NA",0,"Data staging / exfiltration","No shell history or timeline collected.");
+  // C10 SSH key reused across accounts (authorized_keys)
+  var authById={}, akN=0;
+  for(i2=0;i2<SSHKEYS.length;i2++){ var sk=SSHKEYS[i2]; if(sk.kind!=="authorized_keys"||!sk.id) continue; akN++;
+    if(!authById[sk.id]) authById[sk.id]={n:0,scopes:{}}; authById[sk.id].n++; authById[sk.id].scopes[sk.scope]=1; }
+  if(akN){ var reuse=null,rid; for(rid in authById){ if(!authById.hasOwnProperty(rid)) continue; var sc2=0,ss; for(ss in authById[rid].scopes){ if(authById[rid].scopes.hasOwnProperty(ss)) sc2++; } if(sc2>=2){ reuse={id:rid,n:sc2}; break; } }
+    if(reuse) add(CO,"WARN",2,"SSH key authorized on multiple accounts","authorized_keys key id "+reuse.id+" grants login to "+reuse.n+" different accounts - a single stolen private key unlocks them all.",{tab:"ssh"});
+    else add(CO,"PASS",0,"SSH key authorized on multiple accounts","No single authorized_keys entry is shared across accounts.",{tab:"ssh"});
+  } else add(CO,"NA",0,"SSH key authorized on multiple accounts","No authorized_keys entries collected.");
+  // C11 null-passphrase private key present
+  var nullK=0; for(i2=0;i2<SSHKEYS.length;i2++){ if(SSHKEYS[i2].priv && SSHKEYS[i2].nullpass===true) nullK++; }
+  if(have(SSHKEYS)){
+    if(nullK) add(CO,"WARN",2,"Unencrypted SSH private key",nf(nullK)+" private key(s) with NO passphrase - usable as-is if exfiltrated (pair with outbound-SSH evidence on Logons).",{tab:"ssh"});
+    else add(CO,"PASS",0,"Unencrypted SSH private key","No confirmed null-passphrase private keys.",{tab:"ssh"});
+  } else add(CO,"NA",0,"Unencrypted SSH private key","No SSH key material collected.");
+  // C12 timestomp candidates (crtime after mtime)
+  if(have(TIMEL)){
+    var tsN=0,tsHave=false; for(i2=0;i2<TIMEL.length;i2++){ var z=TIMEL[i2]; if(z.crtime&&z.mtime){ tsHave=true; if(z.crtime>z.mtime+1) tsN++; } }
+    if(!tsHave) add(CO,"NA",0,"Timestomp candidates (crtime > mtime)","Bodyfile carries no creation times to compare.");
+    else if(tsN) add(CO,"WARN",2,"Timestomp candidates (crtime > mtime)",nf(tsN)+" file(s) whose inode-creation time is later than their content-modified time - a possible timestomp tell (also occurs benignly on restore/copy).",{tab:"time"});
+    else add(CO,"PASS",0,"Timestomp candidates (crtime > mtime)","No files have crtime later than mtime.",{tab:"time"});
+  } else add(CO,"NA",0,"Timestomp candidates (crtime > mtime)","No filesystem timeline collected.");
+  // C13 geo-diverse successful logins
+  var geoCC={}, geoN=0; for(i2=0;i2<pubAccept.length;i2++){ var g=GEO[pubAccept[i2].ip]; if(g&&g.cc){ if(!geoCC[g.cc]){ geoCC[g.cc]=1; geoN++; } } }
+  if(!pubAccept.length) add(CO,"NA",0,"Logins from multiple countries","No public-IP logons to geolocate.");
+  else if(!geoN) add(CO,"NA",0,"Logins from multiple countries","Geo/ASN enrichment is off or pending (tick 'Online Geo/ASN lookups' and re-Analyze).");
+  else if(geoN>=2){ var ccs=[]; for(var cc in geoCC){ if(geoCC.hasOwnProperty(cc)) ccs.push(cc); }
+    add(CO,"WARN",2,"Logins from multiple countries","Accepted logons originate from "+geoN+" countries: "+ccs.join(", ")+" - impossible-travel / shared-credential tell.",{tab:"logon"}); }
+  else add(CO,"PASS",0,"Logins from multiple countries","All public-IP logons resolve to a single country.",{tab:"logon"});
+
+  /* ======================= POSTURE ======================= */
+  var PO="posture";
+  var haveSshd=!!firstFile(LASTROOT,["[root]/etc/ssh/sshd_config"]);
+  var havePam=!!firstFolder(LASTROOT,["[root]/etc/pam.d"]);
+  var haveShadow=false; for(i2=0;i2<USERS.length;i2++){ if(USERS[i2].locked!==null){ haveShadow=true; break; } }
+  function driftHits(needle){ var out=[]; for(var d=0;d<CONFIGDRIFT.length;d++){ if(CONFIGDRIFT[d].detail.toLowerCase().indexOf(needle)>=0) out.push(CONFIGDRIFT[d]); } return out; }
+  // P1 root SSH login
+  if(!haveSshd) add(PO,"NA",0,"SSH: direct root login disabled","No sshd_config collected.");
+  else { var d1=driftHits("permitrootlogin yes"); if(d1.length) add(PO,"FAIL",3,"SSH: direct root login disabled","sshd_config has PermitRootLogin yes - root can SSH in directly.",{tab:"persist"}); else add(PO,"PASS",0,"SSH: direct root login disabled","PermitRootLogin is not 'yes'.",{tab:"persist"}); }
+  // P2 password auth
+  if(!haveSshd) add(PO,"NA",0,"SSH: password authentication off","No sshd_config collected.");
+  else { var d2=driftHits("passwordauthentication"); if(d2.length) add(PO,"WARN",1,"SSH: password authentication off","sshd allows password logins ("+trunc(d2[0].detail,60)+") - brute-forceable; prefer keys only.",{tab:"persist"}); else add(PO,"PASS",0,"SSH: password authentication off","Password authentication is disabled.",{tab:"persist"}); }
+  // P3 empty passwords over SSH
+  if(!haveSshd) add(PO,"NA",0,"SSH: empty passwords rejected","No sshd_config collected.");
+  else { var d3=driftHits("permitemptypasswords yes"); if(d3.length) add(PO,"FAIL",3,"SSH: empty passwords rejected","sshd_config has PermitEmptyPasswords yes.",{tab:"persist"}); else add(PO,"PASS",0,"SSH: empty passwords rejected","Empty passwords are not permitted over SSH.",{tab:"persist"}); }
+  // P4 PAM auth stack
+  if(!havePam) add(PO,"NA",0,"PAM auth stack integrity","No /etc/pam.d collected.");
+  else { var d4=driftHits("pam_permit").concat(driftHits("pam_exec")).concat(driftHits("nullok"));
+    if(d4.length) add(PO,(/\bsufficient\b|before any real/.test(d4[0].detail.toLowerCase())?"FAIL":"WARN"),(/\bsufficient\b|before any real/.test(d4[0].detail.toLowerCase())?3:2),"PAM auth stack integrity",nf(d4.length)+" PAM weakness(es): "+trunc(d4[0].detail,80),{tab:"persist"});
+    else add(PO,"PASS",0,"PAM auth stack integrity","No always-succeed / pam_exec / nullok weaknesses in the PAM auth stack."); }
+  // P5 extra UID-0 accounts
+  if(!have(USERS)) add(PO,"NA",0,"No extra UID-0 (root-equivalent) accounts","No /etc/passwd collected.");
+  else { var u0=[]; for(i2=0;i2<USERS.length;i2++){ if(USERS[i2].uid===0 && USERS[i2].user!=="root") u0.push(USERS[i2].user); }
+    if(u0.length) add(PO,"FAIL",3,"No extra UID-0 (root-equivalent) accounts","UID-0 account(s) besides root: "+u0.join(", ")+" - a root-clone backdoor.",{tab:"users"}); else add(PO,"PASS",0,"No extra UID-0 (root-equivalent) accounts","root is the only UID-0 account.",{tab:"users"}); }
+  // P6 empty-password accounts
+  if(!haveShadow) add(PO,"NA",0,"No blank-password accounts","No /etc/shadow collected (non-root capture or not in profile).");
+  else { var ep2=[]; for(i2=0;i2<USERS.length;i2++){ if(USERS[i2].pwEmpty===true) ep2.push(USERS[i2].user); }
+    if(ep2.length) add(PO,"FAIL",3,"No blank-password accounts","Account(s) with an empty password field: "+ep2.join(", "),{tab:"users"}); else add(PO,"PASS",0,"No blank-password accounts","No accounts have a blank password.",{tab:"users"}); }
+  // P7 service accounts with an interactive shell
+  if(!have(USERS)) add(PO,"NA",0,"Service accounts have no login shell","No /etc/passwd collected.");
+  else { var sv=[]; for(i2=0;i2<USERS.length;i2++){ var U=USERS[i2]; if(U.uid>0 && U.uid<1000 && U.interactive && userEnabled(U)!==false) sv.push(U.user+"(uid "+U.uid+")"); }
+    if(sv.length) add(PO,"WARN",2,"Service accounts have no login shell","System/service account(s) with an interactive, usable shell: "+trunc(sv.join(", "),90)+" - shrink the attack surface.",{tab:"users"}); else add(PO,"PASS",0,"Service accounts have no login shell","No sub-1000 UID account has a usable interactive shell.",{tab:"users"}); }
+  // P8 sudoers NOPASSWD (direct read - not otherwise parsed)
+  var sudoFiles=[], sf=firstFile(LASTROOT,["[root]/etc/sudoers"]); if(sf) sudoFiles.push(sf);
+  var sdd=firstFolder(LASTROOT,["[root]/etc/sudoers.d"]);
+  if(sdd){ try{ var se=new Enumerator((new ActiveXObject("Scripting.FileSystemObject")).GetFolder(sdd).Files); for(;!se.atEnd();se.moveNext()){ sudoFiles.push(se.item().Path+""); } }catch(esd){} }
+  if(!sudoFiles.length) add(PO,"NA",0,"Sudo: no unrestricted NOPASSWD grants","No sudoers files collected.");
+  else { var nopw=[]; for(i2=0;i2<sudoFiles.length;i2++){ var sl2=readLines(sudoFiles[i2]);
+      for(j=0;j<sl2.length;j++){ var sline=trimStr(sl2[j]); if(!sline||sline.charAt(0)==="#") continue;
+        if(/NOPASSWD:/i.test(sline) && !/^Defaults/i.test(sline)) nopw.push(trunc(sline,70)); } }
+    if(nopw.length) add(PO,"WARN",2,"Sudo: no unrestricted NOPASSWD grants",nf(nopw.length)+" NOPASSWD sudo rule(s), e.g. "+nopw[0]+" - a compromised account escalates without a password.",{tab:"users"}); else add(PO,"PASS",0,"Sudo: no unrestricted NOPASSWD grants","No NOPASSWD grants in sudoers.",{tab:"users"}); }
+  // P9 dangerous containers
+  if(!have(CONTAINERS)) add(PO,"NA",0,"No privileged / host-namespace containers","No running containers (or no container runtime) in this capture.");
+  else { var badC=null; for(i2=0;i2<CONTAINERS.length;i2++){ if(hasTag(CONTAINERS[i2],"PRIVILEGED")||hasTag(CONTAINERS[i2],"HOST-NS")||hasTag(CONTAINERS[i2],"SENS-MOUNT")){ badC=CONTAINERS[i2]; break; } }
+    if(badC) add(PO,"FAIL",3,"No privileged / host-namespace containers","Container '"+trunc(badC.names||badC.image,40)+"' is privileged / shares a host namespace / mounts a sensitive host path - a container-escape surface.",{tab:"apps"}); else add(PO,"PASS",0,"No privileged / host-namespace containers","No running container is privileged or host-namespaced.",{tab:"apps"}); }
+  // P10 auditd present
+  var haveAuditLog=!!firstFile(LASTROOT,["[root]/var/log/audit/audit.log"]);
+  var auditProc=false; for(i2=0;i2<PROC.length;i2++){ if(/auditd/.test((PROC[i2].cmd||"")+(PROC[i2].exe||""))){ auditProc=true; break; } }
+  if(PROFILE.logsOnly && !haveAuditLog && !have(PROC)) add(PO,"NA",0,"Audit logging (auditd) active","Neither audit.log nor a process list was collected.");
+  else if(haveAuditLog||auditProc) add(PO,"PASS",0,"Audit logging (auditd) active","auditd "+(auditProc?"is running":"has written audit.log")+" - process-level telemetry is available.",{tab:"audit"});
+  else add(PO,"WARN",2,"Audit logging (auditd) active","No auditd process and no audit.log - execve-level telemetry is absent on this host.");
+  // P11 firewall configured
+  var fwFile=firstFile(LASTROOT,["live_response/network/iptables_-L_-v_-n.txt","live_response/network/nft_list_ruleset.txt","live_response/network/nft.txt","live_response/network/iptables.txt"]);
+  var listenAll=0; for(i2=0;i2<NET.length;i2++){ var N=NET[i2]; if(/listen/i.test(N.state||"") && /(^|:)(0\.0\.0\.0|::|\*):/.test((N.local||""))) listenAll++; }
+  if(!fwFile && !have(NET)) add(PO,"NA",0,"Host firewall has rules","No firewall dump and no socket list collected.");
+  else if(fwFile){ var fwl=readLines(fwFile), rules=0; for(j=0;j<fwl.length;j++){ var fl=trimStr(fwl[j]); if(/^(ACCEPT|DROP|REJECT|-A |chain\s+\S+\s+\(policy)/i.test(fl)) rules++; }
+    if(rules>3) add(PO,"PASS",0,"Host firewall has rules",nf(rules)+" packet-filter rule/chain line(s) present"+(listenAll?("; "+listenAll+" service(s) still listen on all interfaces"):"")+".",{tab:"net"});
+    else add(PO,"WARN",2,"Host firewall has rules","Firewall dump present but effectively empty (default-accept)"+(listenAll?("; "+listenAll+" service(s) listen on all interfaces"):"")+".",{tab:"net"}); }
+  else add(PO,"WARN",2,"Host firewall has rules","No firewall dump in the capture"+(listenAll?("; "+listenAll+" service(s) listen on 0.0.0.0/:: with no visible ruleset"):"")+".",{tab:"net"});
+  // P12 SUID / world-writable anomalies (from persistence sweeps)
+  var suidN=0,wwN=0,capN=0; for(i2=0;i2<PERSFIND.length;i2++){ var P=PERSFIND[i2];
+    if(hasTag(P,"SUID")) suidN++; if(hasTag(P,"WW-SYS")) wwN++; if(hasTag(P,"CAPS")) capN++; }
+  if(!have(PERSFIND)) add(PO,"NA",0,"No unexpected SUID / world-writable / caps","Persistence sweeps did not run (logs-only capture).");
+  else if(suidN+wwN+capN) add(PO,"WARN",2,"No unexpected SUID / world-writable / caps",[suidN?(suidN+" non-baseline SUID"):"",capN?(capN+" file-capability"):"",wwN?(wwN+" world-writable system path"):""].join(", ").replace(/(^, +|, +$)/g,"")+" finding(s).",{tab:"persist"});
+  else add(PO,"PASS",0,"No unexpected SUID / world-writable / caps","No non-baseline SUID, file-capability or world-writable system findings.",{tab:"persist"});
+  // P13 distro EOL heuristic
+  var dl=lc(META.distro||"");
+  if(!dl) add(PO,"NA",0,"OS is within a supported release","No /etc/os-release distribution string collected.");
+  else { var eol=/ubuntu (1[0-8]\.|19\.|21\.|23\.)/.test(dl)||/(centos|red hat).* (6|7)\b/.test(dl)||/debian.* (7|8|9|10)\b/.test(dl)||/fedora.* (3[0-6]|2\d)\b/.test(dl);
+    if(eol) add(PO,"WARN",2,"OS is within a supported release","Distribution '"+trunc(META.distro,50)+"' looks past end-of-life - unpatched kernel/userland CVEs likely."); else add(PO,"PASS",0,"OS is within a supported release","Distribution '"+trunc(META.distro,50)+"' is not on the known-EOL list (verify against the vendor lifecycle).","persist"); }
+  // P14 privileged group membership (informational)
+  if(!have(USERS)) add(PO,"NA",0,"Privileged group membership reviewed","No /etc/passwd collected.");
+  else { var pg=[]; for(i2=0;i2<USERS.length;i2++){ var G=USERS[i2].groups.join(",").toLowerCase();
+      if(USERS[i2].uid>=1000 && /(^|,)(docker|sudo|wheel|adm|lxd)(,|$)/.test(G)) pg.push(USERS[i2].user); }
+    if(pg.length) add(PO,"WARN",1,"Privileged group membership reviewed","Human account(s) in docker/sudo/wheel/lxd (host-root-equivalent via those groups): "+trunc(pg.join(", "),90),{tab:"users"}); else add(PO,"PASS",0,"Privileged group membership reviewed","No non-system accounts sit in docker/lxd/wheel/sudo groups.",{tab:"users"}); }
+  // P15 firewall enabled/disabled (state, distinct from the ruleset check above) - ufw status
+  // output, /etc/ufw/ufw.conf ENABLED=, or a running firewalld
+  var ufwTxt=readLines(firstFile(LASTROOT,["live_response/network/ufw_status_verbose.txt","live_response/network/ufw_status.txt"])).join("\n");
+  var ufwConfT=readLines(firstFile(LASTROOT,["[root]/etc/ufw/ufw.conf"])).join("\n");
+  var fwdRun=false; for(i2=0;i2<PROC.length;i2++){ if(/firewalld/.test((PROC[i2].cmd||"")+(PROC[i2].exe||""))){ fwdRun=true; break; } }
+  var ufwOn=/status:\s*active/i.test(ufwTxt)||/^\s*ENABLED\s*=\s*yes/mi.test(ufwConfT);
+  var ufwOff=/status:\s*inactive/i.test(ufwTxt)||(!ufwOn && /^\s*ENABLED\s*=\s*no/mi.test(ufwConfT));
+  if(ufwOn||fwdRun) add(PO,"PASS",0,"Host firewall enabled",(ufwOn?"ufw is active":"firewalld is running")+(/default:\s*deny/i.test(ufwTxt)?" with a default-deny inbound policy":"")+".",{tab:"net"});
+  else if(ufwOff) add(PO,"FAIL",3,"Host firewall enabled","The host firewall is OFF (ufw "+(/status:\s*inactive/i.test(ufwTxt)?"reports 'Status: inactive'":"ENABLED=no in /etc/ufw/ufw.conf")+") and no firewalld is running - every listening service is exposed.",{tab:"net"});
+  else add(PO,"NA",0,"Host firewall enabled","No ufw status / ufw.conf / firewalld evidence in this capture (the ruleset check above may still apply).");
+  // P16 non-standard listening services on externally-reachable interfaces
+  if(!have(NET)) add(PO,"NA",0,"Only standard services listening","No socket list collected.");
+  else { var STD_LISTEN={20:1,21:1,22:1,25:1,53:1,67:1,68:1,80:1,88:1,110:1,111:1,123:1,137:1,138:1,139:1,143:1,161:1,389:1,443:1,445:1,465:1,514:1,546:1,547:1,587:1,631:1,636:1,873:1,993:1,995:1,2049:1,3306:1,5432:1};
+    var odd=[], seenLp={};
+    for(i2=0;i2<NET.length;i2++){ var NL=NET[i2]; if(!/listen/i.test(NL.state||"")) continue;
+      var la=String(NL.local||"");
+      if(la.indexOf("127.")===0 || /^\[?::1\]/.test(la) || la.indexOf("localhost")===0 || la.indexOf("127.0.0.53")===0) continue;   // loopback-only = local attack surface, skip
+      var pm=la.match(/[:\]](\d+)$/); var pt=pm?parseInt(pm[1],10):0;
+      if(!pt || STD_LISTEN[pt]) continue;
+      var lkey=pt+"/"+(NL.procName||"?"); if(seenLp[lkey]) continue; seenLp[lkey]=1;
+      odd.push((NL.procName||"unknown process")+" on "+pt); }
+    if(odd.length) add(PO,"WARN",2,"Only standard services listening",nf(odd.length)+" non-standard service(s) listening on externally-reachable interfaces: "+trunc(odd.join(", "),120)+" - verify each is expected (C2 frameworks, ad-hoc servers and collection agents live here).",{tab:"net"});
+    else add(PO,"PASS",0,"Only standard services listening","Every externally-reachable listener is on a well-known service port.",{tab:"net"}); }
+  // P17 mandatory access control (SELinux enforcing / AppArmor loaded) - CIS 1.6/1.7
+  var seCfgT=readLines(firstFile(LASTROOT,["[root]/etc/selinux/config"])).join("\n");
+  var seMode=(seCfgT.match(/^\s*SELINUX\s*=\s*(\w+)/mi)||["",""])[1].toLowerCase();
+  var aaEnabledT=trimStr(readLines(firstFile(LASTROOT,["live_response/system/module/apparmor/parameters/enabled"])).join(""));
+  var aaPresent=!!firstFolder(LASTROOT,["live_response/system/module/apparmor","[root]/etc/apparmor.d"]);
+  if(seMode==="enforcing") add(PO,"PASS",0,"Mandatory access control (SELinux/AppArmor)","SELinux is set to enforcing.");
+  else if(seMode==="permissive"||seMode==="disabled") add(PO,"WARN",2,"Mandatory access control (SELinux/AppArmor)","SELinux is "+seMode+(aaPresent?" (AppArmor artifacts also present - verify which MAC is meant to be active)":" and no AppArmor evidence - MAC is not confining anything")+".");
+  else if(aaPresent) add(PO,"PASS",0,"Mandatory access control (SELinux/AppArmor)","AppArmor is installed"+(aaEnabledT==="Y"?" and its kernel module reports enabled":" (kernel-module state not captured)")+".");
+  else if(have(USERS)) add(PO,"WARN",2,"Mandatory access control (SELinux/AppArmor)","No SELinux config and no AppArmor artifacts - no mandatory access control on this host.");
+  else add(PO,"NA",0,"Mandatory access control (SELinux/AppArmor)","No /etc collected.");
+  // P18 kernel hardening sysctls - CIS 1.5.x / 3.x
+  var sysLines=readLines(firstFile(LASTROOT,["live_response/system/sysctl_-a.txt"]));
+  if(!sysLines.length) add(PO,"NA",0,"Kernel hardening sysctls","No sysctl -a output collected.");
+  else { var sysV={}, sm;
+    for(i2=0;i2<sysLines.length;i2++){ sm=sysLines[i2].match(/^(kernel\.randomize_va_space|fs\.suid_dumpable|net\.ipv4\.tcp_syncookies|net\.ipv4\.ip_forward)\s*=\s*(\S+)/); if(sm) sysV[sm[1]]=sm[2]; }
+    var sysBad=[];
+    if(sysV["kernel.randomize_va_space"]!=null && sysV["kernel.randomize_va_space"]!=="2") sysBad.push("ASLR weakened (kernel.randomize_va_space="+sysV["kernel.randomize_va_space"]+", want 2)");
+    if(sysV["fs.suid_dumpable"]!=null && sysV["fs.suid_dumpable"]!=="0") sysBad.push("setuid core dumps allowed (fs.suid_dumpable="+sysV["fs.suid_dumpable"]+", want 0 - can leak credential material)");
+    if(sysV["net.ipv4.tcp_syncookies"]!=null && sysV["net.ipv4.tcp_syncookies"]!=="1") sysBad.push("SYN cookies off (net.ipv4.tcp_syncookies="+sysV["net.ipv4.tcp_syncookies"]+")");
+    if(sysBad.length) add(PO,"WARN",2,"Kernel hardening sysctls",sysBad.join("; ")+".");
+    else add(PO,"PASS",0,"Kernel hardening sysctls","ASLR full, setuid core dumps blocked, SYN cookies on.");
+    // P18b ip_forward - routing enabled without an obvious reason is a pivot tell (CIS 3.2)
+    if(sysV["net.ipv4.ip_forward"]==null){ /* not in output - fold into NA silence */ }
+    else if(sysV["net.ipv4.ip_forward"]==="1"){
+      if(have(CONTAINERS)) add(PO,"PASS",0,"IP forwarding justified","net.ipv4.ip_forward=1, expected here: container networking is in use.");
+      else add(PO,"WARN",2,"IP forwarding justified","net.ipv4.ip_forward=1 but no container runtime in the capture - the host routes packets (pivot/MITM tell, or an undocumented router).",{tab:"net"}); }
+    else add(PO,"PASS",0,"IP forwarding justified","net.ipv4.ip_forward=0."); }
+  // P19 password aging policy - CIS 5.4
+  var ldT=readLines(firstFile(LASTROOT,["[root]/etc/login.defs"]));
+  if(!ldT.length) add(PO,"NA",0,"Password aging policy","No /etc/login.defs collected.");
+  else { var pmax=0; for(i2=0;i2<ldT.length;i2++){ var lm2=ldT[i2].match(/^\s*PASS_MAX_DAYS\s+(\d+)/); if(lm2) pmax=parseInt(lm2[1],10); }
+    if(!pmax) add(PO,"NA",0,"Password aging policy","login.defs collected but PASS_MAX_DAYS not set.");
+    else if(pmax>365) add(PO,"WARN",1,"Password aging policy","PASS_MAX_DAYS="+pmax+" - passwords never effectively expire (CIS: 365 or less).",{tab:"users"});
+    else add(PO,"PASS",0,"Password aging policy","PASS_MAX_DAYS="+pmax+".",{tab:"users"}); }
+  // P20 time synchronization - CIS 2.1 (also evidence-integrity: unsynced clocks skew every timestamp)
+  var tdT=readLines(firstFile(LASTROOT,["live_response/system/timedatectl_status.txt","live_response/system/timedatectl.txt"])).join("\n");
+  var ntpRun=false; for(i2=0;i2<PROC.length;i2++){ if(/chronyd|ntpd|systemd-timesyn/.test((PROC[i2].cmd||"")+(PROC[i2].exe||""))){ ntpRun=true; break; } }
+  // NOTE: check "synchronized: no" BEFORE "NTP service: active" - a running daemon that hasn't
+  // synced yet still means skewed timestamps, so the explicit not-synced state must win.
+  if(/synchronized:\s*no/i.test(tdT)) add(PO,"WARN",2,"System clock NTP-synchronized","timedatectl reports the clock is NOT synchronized"+(ntpRun?" (an NTP daemon is running but not synced)":"")+" - treat every timestamp in this capture as potentially skewed.");
+  else if(/synchronized:\s*yes/i.test(tdT)||/ntp service:\s*active/i.test(tdT)) add(PO,"PASS",0,"System clock NTP-synchronized","timedatectl reports the clock is synchronized - capture timestamps are trustworthy.");
+  else if(ntpRun) add(PO,"PASS",0,"System clock NTP-synchronized","An NTP daemon (chrony/ntpd/timesyncd) is running.");
+  else if(tdT||have(PROC)) add(PO,"WARN",1,"System clock NTP-synchronized","No sync evidence in timedatectl output or the process list.");
+  else add(PO,"NA",0,"System clock NTP-synchronized","No timedatectl output or process list collected.");
+  // P21 /tmp mount hardening - CIS 1.1.2
+  var mntT=readLines(firstFile(LASTROOT,["live_response/storage/mount.txt","live_response/storage/findmnt.txt","[root]/proc/mounts"]));
+  if(!mntT.length) add(PO,"NA",0,"/tmp mounted with noexec/nosuid","No mount table collected.");
+  else { var tmpLn=""; for(i2=0;i2<mntT.length;i2++){ if(/\s\/tmp\s/.test(mntT[i2])||/^\/tmp\s/.test(mntT[i2])){ tmpLn=mntT[i2]; break; } }
+    if(!tmpLn) add(PO,"WARN",1,"/tmp mounted with noexec/nosuid","/tmp is not a separate mount - temp-path payloads (see TMPEXEC hits) execute from the root filesystem unrestricted.",{tab:"time"});
+    else if(/noexec/.test(tmpLn)&&/nosuid/.test(tmpLn)) add(PO,"PASS",0,"/tmp mounted with noexec/nosuid","Separate /tmp with noexec+nosuid.");
+    else add(PO,"WARN",2,"/tmp mounted with noexec/nosuid","/tmp is a separate mount but lacks "+(/noexec/.test(tmpLn)?"nosuid":"noexec")+" - dropped payloads still run from it: "+trunc(tmpLn,80),{tab:"time"}); }
+  // P22 duplicate non-zero UIDs - CIS 6.2 (UID-0 clones are their own FAIL above)
+  if(!have(USERS)) add(PO,"NA",0,"No duplicate UIDs","No /etc/passwd collected.");
+  else { var uidSeen={}, dup=[];
+    for(i2=0;i2<USERS.length;i2++){ var uU=USERS[i2]; if(uU.uid===0) continue;
+      if(uidSeen[uU.uid]){ dup.push(uidSeen[uU.uid]+"/"+uU.user+" share uid "+uU.uid); } else uidSeen[uU.uid]=uU.user; }
+    if(dup.length) add(PO,"WARN",2,"No duplicate UIDs",dup.join("; ")+" - shared identity defeats attribution.",{tab:"users"});
+    else add(PO,"PASS",0,"No duplicate UIDs","Every non-root account has a unique UID.",{tab:"users"}); }
+  // P23 additional sshd hardening - CIS 5.2 (beyond the root/password/empty checks above)
+  if(!SSHD_DIRS) add(PO,"NA",0,"SSH hardening extras (X11/MaxAuthTries/UserEnvironment)","No sshd_config collected.");
+  else { var sshBad=[];
+    if(lc(SSHD_DIRS["x11forwarding"]||"")==="yes") sshBad.push("X11Forwarding yes");
+    if(lc(SSHD_DIRS["permituserenvironment"]||"")==="yes") sshBad.push("PermitUserEnvironment yes (LD_PRELOAD-style injection over SSH)");
+    var mat=parseInt(SSHD_DIRS["maxauthtries"]||"6",10); if(mat>4) sshBad.push("MaxAuthTries "+(SSHD_DIRS["maxauthtries"]||"(default 6)")+" (CIS: 4 or less)");
+    if(sshBad.length) add(PO,"WARN",1,"SSH hardening extras (X11/MaxAuthTries/UserEnvironment)",sshBad.join("; ")+".",{tab:"persist"});
+    else add(PO,"PASS",0,"SSH hardening extras (X11/MaxAuthTries/UserEnvironment)","X11 forwarding off, user environment off, MaxAuthTries within CIS bounds."); }
+  // P24 patch recency (case-window-aware: PKGS is pre-filtered when /from /to is set)
+  if(DFROM||DTO) add(PO,"NA",0,"Recent patching activity","A case window is active - package history is pre-filtered, recency not assessable (clear /from /to and re-Analyze).");
+  else if(!PKGS.length) add(PO,"NA",0,"Recent patching activity","No package-manager history collected.");
+  else { var mxPk=0; for(i2=0;i2<PKGS.length;i2++){ var pe2b=pkgEpoch(PKGS[i2]); if(pe2b>mxPk) mxPk=pe2b; }
+    var capE=captureEpoch();
+    if(!mxPk||!capE) add(PO,"NA",0,"Recent patching activity","Package timestamps or the collection time could not be normalized.");
+    else { var ageD=Math.floor((capE-mxPk)/86400);
+      if(ageD>90) add(PO,"WARN",1,"Recent patching activity","Latest package activity is "+nf(ageD)+" days before collection - patching looks stale (or logs rotated away).",{tab:"apps"});
+      else add(PO,"PASS",0,"Recent patching activity","Package activity "+nf(ageD<0?0:ageD)+" day(s) before collection.",{tab:"apps"}); } }
+
+  /* ======================= APACHE (CIS Apache HTTP Server 2.4-inspired) ======================= */
+  var AP="apache";
+  if(!APACHECFG||!APACHECFG.present){
+    add(AP,"NA",0,"Apache configuration","No /etc/apache2 or /etc/httpd configuration in this capture - host is not an Apache web server, or /etc was not collected.");
+  } else { var AC=APACHECFG;
+    // A1 ServerTokens (CIS 3.2 / info-leak)
+    if(lc(AC.tokens)==="prod") add(AP,"PASS",0,"ServerTokens Prod","Version banner minimized (ServerTokens Prod).",{tab:"web"});
+    else add(AP,"WARN",1,"ServerTokens Prod","ServerTokens "+(AC.tokens||"(unset - defaults to Full)")+" leaks Apache/OS version in every response header (CIS: set Prod).",{tab:"web"});
+    // A2 ServerSignature (CIS 3.3)
+    if(lc(AC.signature)==="on") add(AP,"WARN",1,"ServerSignature Off","ServerSignature On - version footer on server-generated pages (error pages, listings).",{tab:"web"});
+    else add(AP,"PASS",0,"ServerSignature Off","No version footer on server-generated pages.",{tab:"web"});
+    // A3 TraceEnable (CIS 5.8 - XST)
+    if(lc(AC.trace)==="off") add(AP,"PASS",0,"TraceEnable Off","HTTP TRACE disabled.",{tab:"web"});
+    else add(AP,"WARN",2,"TraceEnable Off","TraceEnable "+(AC.trace||"(unset - defaults to On)")+" - cross-site-tracing surface (CIS: Off).",{tab:"web"});
+    // A4 runs as dedicated account (CIS 3.1)
+    var apU=lc(AC.user||"");
+    if(!apU) add(AP,"WARN",1,"Runs as a dedicated non-root user","No User directive found - verify the effective account.",{tab:"web"});
+    else if(apU==="root") add(AP,"FAIL",3,"Runs as a dedicated non-root user","Apache runs as root - any web-app compromise is instantly root.",{tab:"web"});
+    else add(AP,"PASS",0,"Runs as a dedicated non-root user","User "+AC.user+".",{tab:"web"});
+    // A5 directory listing (CIS 5.4)
+    if(AC.indexes.length) add(AP,"WARN",2,"Directory listing disabled","'Options Indexes' active in: "+trunc(AC.indexes.join(", "),90)+" - directory contents are browsable (recon + dropped-file discovery for an attacker).",{tab:"web"});
+    else add(AP,"PASS",0,"Directory listing disabled","No 'Options Indexes' in the enabled configuration.",{tab:"web"});
+    // A6 mod_status exposure (CIS 2.4)
+    if(AC.statusOn) add(AP,"WARN",1,"mod_status not exposed","mod_status / server-status handler is enabled - verify it is restricted to localhost (leaks URLs, client IPs and worker state).",{tab:"web"});
+    else add(AP,"PASS",0,"mod_status not exposed","Status handler not enabled.",{tab:"web"});
+    // A7 risky modules (CIS 2.x minimize modules)
+    var risky=[], rk=["dav","dav_fs","userdir","info","cgi","cgid","autoindex","include"];
+    for(i2=0;i2<rk.length;i2++){ if(contains(AC.modules,rk[i2])) risky.push(rk[i2]); }
+    if(risky.length) add(AP,"WARN",1,"Only required modules enabled","Attack-surface modules enabled: "+risky.join(", ")+" (CIS ch.2: disable WebDAV/userdir/info/CGI/autoindex/SSI unless required).",{tab:"web"});
+    else add(AP,"PASS",0,"Only required modules enabled","None of the CIS watchlist modules (dav/userdir/info/cgi/autoindex/include) are enabled.",{tab:"web"});
+    // A8 TLS present + not-ancient protocols (CIS 7.x)
+    if(!contains(AC.modules,"ssl") && !AC.sslOn) add(AP,"WARN",1,"TLS configured","No ssl module / SSLEngine in the enabled configuration - the site serves plain HTTP only (credentials and sessions in cleartext).",{tab:"web"});
+    else if(AC.sslproto && /(^|\s)\+?(sslv3|tlsv1(\.0)?|tlsv1\.1)(\s|$)/i.test(AC.sslproto.replace(/-\S+/g,""))) add(AP,"WARN",2,"TLS configured","SSLProtocol '"+trunc(AC.sslproto,50)+"' permits deprecated protocols (CIS: TLS 1.2+ only).",{tab:"web"});
+    else add(AP,"PASS",0,"TLS configured","ssl module enabled"+(AC.sslproto?(" (SSLProtocol "+trunc(AC.sslproto,40)+")"):"")+".",{tab:"web"});
+    // A9 .htaccess override surface (CIS 5.5)
+    if(AC.overrideAll.length) add(AP,"WARN",1,"AllowOverride restricted","'AllowOverride All' in: "+trunc(AC.overrideAll.join(", "),80)+" - a writable docroot lets an attacker drop .htaccess handlers/rewrites.",{tab:"web"});
+    else add(AP,"PASS",0,"AllowOverride restricted","No 'AllowOverride All' in the enabled configuration.",{tab:"web"});
+    // A10 logging configured (CIS 6.x)
+    if(AC.logging) add(AP,"PASS",0,"Access/error logging configured","ErrorLog/CustomLog directives present (the Apache Web Server tab parses the collected logs).",{tab:"web"});
+    else add(AP,"WARN",2,"Access/error logging configured","No ErrorLog/CustomLog in the enabled configuration - no web evidence trail.",{tab:"web"});
+  }
+
+  return F;
+}
+var SEC_STATUS_ORDER={FAIL:0,WARN:1,NA:2,PASS:3,INFO:2};
+function secStatusTag(s){
+  var cls=(s==="FAIL")?"ioc":(s==="WARN")?"sus":(s==="PASS")?"ok":"info";
+  return '<span class="tag '+cls+'">'+esc(s)+'</span>'; }
+function secRowCls(s){ return s==="FAIL"?"row-flag":(s==="WARN"?"row-warn":""); }
+function secSort(a,b){ var x=SEC_STATUS_ORDER[a.status], y=SEC_STATUS_ORDER[b.status]; if(x!==y) return x-y; return (b.sev-a.sev); }
+function secTableHtml(rows){
+  var h='<thead><tr><th title="PASS / WARN / FAIL / N-A (source artifact not collected)">Result</th>'
+    +'<th title="What was checked">Check</th>'
+    +'<th title="What the check found - click a row with a timestamp to pivot the Timeline, or to jump to the source tab">Evidence</th></tr></thead><tbody>';
+  if(!rows.length){ h+='<tr><td colspan="3" class="muted">(no checks in this category)</td></tr>'; return h+'</tbody>'; }
+  rows.sort(secSort);
+  for(var i=0;i<rows.length;i++){ var r=rows[i]; var rc=secRowCls(r.status);
+    var jump=r.ep?(' data-ep="'+r.ep+'"'):(r.tab?(' data-gotab="'+esc(r.tab)+'"'):"");
+    var cur=(r.ep||r.tab)?' style="cursor:pointer"':"";
+    h+='<tr'+(rc?(' class="'+rc+'"'):'')+cur+jump+'><td>'+secStatusTag(r.status)+'</td>'
+      +'<td class="mono">'+esc(r.name)+'</td>'
+      +'<td class="mono muted" title="'+esc(r.evidence)+'">'+esc(trunc(r.evidence,150))+(r.ep?(' <span class="lnk">pivot →</span>'):(r.tab?' <span class="lnk">open →</span>':''))+'</td></tr>'; }
+  return h+'</tbody>';
+}
+function renderSecurity(){
+  if(!LASTROOT){ $("secBanner").innerHTML='<span class="muted">Analyze a capture first.</span>'; $("secCorrTbl").innerHTML=""; $("secPostTbl").innerHTML=""; $("secApacheTbl").innerHTML=""; return; }
+  var F=computeSecurity();
+  var corr=[], post=[], apache=[], nFail=0, nWarn=0, nPass=0, nNa=0, i;
+  for(i=0;i<F.length;i++){ var f=F[i];
+    if(f.status==="FAIL") nFail++; else if(f.status==="WARN") nWarn++; else if(f.status==="PASS") nPass++; else nNa++;
+    if(f.cat==="correlation") corr.push(f); else if(f.cat==="apache") apache.push(f); else post.push(f); }
+  $("secBanner").innerHTML=
+     '<div class="secpill'+(nFail?' bad':'')+'"><span class="n">'+nFail+'</span><span class="l">Fail</span></div>'
+    +'<div class="secpill'+(nWarn?' warn':'')+'"><span class="n">'+nWarn+'</span><span class="l">Warn</span></div>'
+    +'<div class="secpill ok"><span class="n">'+nPass+'</span><span class="l">Pass</span></div>'
+    +'<div class="secpill"><span class="n">'+nNa+'</span><span class="l">N/A</span></div>';
+  $("secCorrTbl").innerHTML=secTableHtml(corr); setupColResizeFor($("secCorrTbl"),"sec_corr"); freezeById("secCorrTbl");
+  $("secPostTbl").innerHTML=secTableHtml(post); setupColResizeFor($("secPostTbl"),"sec_post"); freezeById("secPostTbl");
+  $("secApacheTbl").innerHTML=secTableHtml(apache); setupColResizeFor($("secApacheTbl"),"sec_apache"); freezeById("secApacheTbl");
+}
+function exportSecurity(){
+  if(!LASTROOT){ setStatus("Analyze a capture first","err"); return; }
+  var F=computeSecurity(); F.sort(function(a,b){ if(a.cat!==b.cat) return a.cat<b.cat?-1:1; return secSort(a,b); });
+  var lines=["Category,Result,Severity,Check,Evidence,PivotTime_"+tzLabel()];
+  for(var i=0;i<F.length;i++){ var f=F[i];
+    lines.push([cq(f.cat),cq(f.status),cq(f.sev),cq(f.name),cq(f.evidence),cq(f.ep?fmtTime(f.ep,true):"")].join(",")); }
+  var dir=LASTOUTDIR||$("outDir").value, path=dir+"\\security_checks_"+nowStamp()+".csv";
+  try{ writeUtf8(path, lines.join("\r\n")); setStatus("Exported "+nf(F.length)+" security checks → "+path,"ok"); appendLog("Exported: "+path); }
+  catch(e){ setStatus("Export failed: "+e.message,"err"); }
 }
 
 /* ---------- shared table rendering ---------- */
@@ -4705,6 +5334,18 @@ function sortRows(rows, cols, st){
     if(typeof x==="number"&&typeof y==="number") return (x-y)*dir;
     x=String(x); y=String(y); return x<y?-dir:(x>y?dir:0); });
 }
+/* v1.6: one consistent, prominent truncation warning for every capped table. total = rows the
+   current filters produced; cap = rows actually rendered. Returned only when truncated. The tooltip
+   points at the two UNCAPPED escape hatches: the on-screen filters (which narrow the set) and the
+   CSV export (which writes every filtered row, not just the shown cap). `how` overrides the export
+   hint for tabs whose completeness path is different (e.g. packages: a case window). */
+function capWarnHtml(total, cap, how){
+  if(!total || total<=cap) return "";
+  var esc2=(typeof esc==="function")?esc:function(s){return s;};
+  var tip="This view matched "+nf(total)+" rows but only the first "+nf(cap)+" are rendered (performance cap). "
+    +"Narrow it with the search box and the filters above (score / date range / type / user), "
+    +(how||("or use Export → CSV to write all "+nf(total)+" rows to file."));
+  return ' <span class="tag ioc" style="cursor:help" title="'+esc2(tip)+'">⚠ Maximum Rows Exceeded</span>'; }
 function drawTable(cols, rows, st, tabkey){
   var shown=rows.length>MAXROWS?MAXROWS:rows.length;
   var html="<thead><tr>";
@@ -4719,7 +5360,7 @@ function drawTable(cols, rows, st, tabkey){
   }
   html+="</tbody>";
   $("tbl").innerHTML=html;
-  $("count").innerHTML=nf(rows.length)+" row"+(rows.length===1?"":"s")+(shown<rows.length?(" (showing "+nf(shown)+")"):"");
+  $("count").innerHTML=nf(rows.length)+" row"+(rows.length===1?"":"s")+(shown<rows.length?(" (showing "+nf(shown)+")"+capWarnHtml(rows.length,MAXROWS)):"");
   var ths=$("tbl").getElementsByTagName("th");
   for(var j=0;j<ths.length;j++){ ths[j].onclick=function(e){ e=e||window.event; var t=e.target||e.srcElement;
     if(t && /\bcgrip\b/.test(t.className+"")) return;
@@ -4941,13 +5582,14 @@ function renderLogon(){
   // v0.11: aggregate-by-source-IP view (brute-force triage) - same table chrome, different columns
   var brute=false; try{ brute=$("bruteOnly").checked; }catch(eb){}
   if(LOGON_BYIP){
-    var arows=[], agg=buildLogonByIp();
+    // v1.6: NBH aggregates only the out-of-hours events, so first/last/counts reflect the filter
+    var arows=[], agg=buildLogonByIp(NBHONLY?nbhLogonSubset():null);
     for(var a2=0;a2<agg.length;a2++){ if(!passQ(agg[a2])) continue;
       if(brute && agg[a2].fails<BRUTE_THRESH) continue;   // v1.3: brute sources = 5+ failures
       arows.push(agg[a2]); }
     sortRows(arows,LIPCOLS,SORT.logonip); drawTable(LIPCOLS,arows,SORT.logonip,"logonip");
     if(!agg.length){ $("tbl").innerHTML='<thead><tr><th>Logons by source IP</th></tr></thead><tbody><tr><td class="muted">No logon rows carry a source IP in this capture.</td></tr></tbody>'; $("count").innerHTML="0 rows"; }
-    else $("count").innerHTML+=(brute?" · brute-force sources only (5+ failures)":"")+" · aggregated from "+nf(LOGON.length)+" logon rows - click a row for detail, By source IP again for the flat view";
+    else $("count").innerHTML+=(brute?" · brute-force sources only (5+ failures)":"")+" · aggregated from "+nf(NBHONLY?nbhLogonSubset().length:LOGON.length)+" logon rows - click a row for detail, By source IP again for the flat view"+(NBHONLY?nbhNote():"");
     return;
   }
   populateLogonFilters();
@@ -4963,8 +5605,10 @@ function renderLogon(){
     // unless the result filter explicitly includes last-login
     if(hideLL && r.result==="last-login" && !(frSel && frSel["last-login"])){ llHidden++; continue; }
     if((DFROM||DTO) && r.epoch){ if(!inDay(logonDay(r.epoch))) continue; }   // case window filters logons too
+    if(NBHONLY && !(r.epoch && isNbh(r.epoch))) continue;   // v1.6: non-business hours
     rows.push(r); }
   sortRows(rows,LCOLS,SORT.logon); drawTable(LCOLS,rows,SORT.logon,"logon");
+  if(NBHONLY && LOGON.length) $("count").innerHTML+=nbhNote();
   if(brute && LOGON.length) $("count").innerHTML+=' · <span class="tag sus">brute-force only</span> (failures + the eventual success from any IP with '+BRUTE_THRESH+'+ failures)';
   if(llHidden && !brute) $("count").innerHTML+=' · '+nf(llHidden)+' lastlog state rows hidden <span class="muted">(Users tab shows them; untick "hide lastlog rows" to mix them in)</span>';
   if(!LOGON.length){ $("tbl").innerHTML='<thead><tr><th>Logons</th></tr></thead><tbody><tr><td class="muted">No auth.log / wtmp / btmp / lastlog / last / lastb events in this capture. Empty on hosts with no interactive logins (e.g. WSL); on a server this view fills with SSH, sudo, pkexec, pam session and account-change events.</td></tr></tbody>'; $("count").innerHTML="0 rows"; }
@@ -4992,8 +5636,10 @@ function renderTime(){ var rows=[]; for(var i=0;i<TIMEL.length;i++){ var r=TIMEL
     // v0.11 pivot window: any timestamp inside ±15 min of the anchor keeps the row
     if(PIVOT){ if(!((r.mtime>=PIVOT.from&&r.mtime<=PIVOT.to)||(r.ctime>=PIVOT.from&&r.ctime<=PIVOT.to)
                   ||(r.crtime>=PIVOT.from&&r.crtime<=PIVOT.to)||(r.atime>=PIVOT.from&&r.atime<=PIVOT.to))) continue; }
+    if(NBHONLY && !nbhTimeRow(r)) continue;   // v1.6: non-business hours (any of the four times)
     rows.push(r); }
   sortRows(rows,TCOLS,SORT.time); drawTable(TCOLS,rows,SORT.time,"time");
+  if(NBHONLY && TIMEL.length) $("count").innerHTML+=nbhNote();
   if(PIVOT && TIMEL.length) $("count").innerHTML+=' · <span class="tag sus">pivot ±15 min @ '+esc(fmtTime(PIVOT.center,true))+' '+esc(tzLabel())+'</span> <span class="lnk" onclick="clearPivot()">clear</span>';
   profileEmptyMsg(TIMEL.length,"filesystem timeline (bodyfile)"); }
 
@@ -5084,13 +5730,14 @@ function populateEvKind(){ var ks={}, i; for(i=0;i<EVENTS.length;i++){ ks[EVENTS
 function renderEvents(){
   populateEvKind();
   var minSc=parseInt($("evMinScore").value,10)||0;
-  var toolOnly=false, notable=false; try{ toolOnly=$("evToolOnly").checked; notable=$("evNotable").checked; }catch(eht){}
+  var toolOnly=false, notable=false, nbhE=false; try{ toolOnly=$("evToolOnly").checked; notable=$("evNotable").checked; nbhE=$("evNbh").checked; }catch(eht){}
   var rows=[], i;
   for(i=0;i<EVENTS.length;i++){ var e=EVENTS[i];
     if(e.score<minSc) continue;
     if(!mdPass("evKind", e.kind)) continue;   // v0.17 multiselect
     if(notable && !NOTABLE_KINDS[e.kind]) continue; // v0.14: notable-events filter
     if(toolOnly && !hasTag(e,"TOOLING")) continue;  // v1.4: TOOLING only - spot recently installed dual-use tools
+    if(nbhE && !(e.epoch && isNbh(e.epoch))) continue;  // v1.6: non-business hours
     if(EVQ && e.blob.indexOf(EVQ)<0) continue;
     if(EVFROM||EVTO){ var d=eventDay(e.epoch); if(EVFROM && d<EVFROM) continue; if(EVTO && d>EVTO) continue; }
     rows.push(e);
@@ -5109,7 +5756,8 @@ function renderEvents(){
       +'<td class="mono" title="'+esc(r.label)+'">'+esc(trunc(r.label,110))+'</td>'
       +'<td class="mono muted">'+esc(r.src)+'</td></tr>'; }
   html+='</tbody>'; $("evTbl").innerHTML=html;
-  $("evCount").innerHTML=nf(rows.length)+" event"+(rows.length===1?"":"s")+(shown<rows.length?(" (showing "+nf(shown)+")"):"")
+  $("evCount").innerHTML=nf(rows.length)+" event"+(rows.length===1?"":"s")+(shown<rows.length?(" (showing "+nf(shown)+")"+capWarnHtml(rows.length,MAXROWS)):"")
+    +(nbhE?nbhNote():"")
     +(JOURNALX.loaded?"":' · <span class="lnk" onclick="loadJournalWsl()">load journal (WSL)</span> for more');
   setupColResizeFor($("evTbl"),"events");
   bindFreeze($("evScroll"), $("evTbl"));   // frozen header
@@ -5151,7 +5799,7 @@ function renderIoc(){
   for(var i2=0;i2<shown;i2++){ var rr=rows[i2]; html+='<tr class="ioc">';
     for(var k=0;k<ICOLS.length;k++){ html+=ICOLS[k].cell(rr); } html+="</tr>"; }
   html+="</tbody>"; $("tbl").innerHTML=html;
-  $("count").innerHTML=nf(rows.length)+" hit"+(rows.length===1?"":"s")+(shown<rows.length?(" (showing "+nf(shown)+")"):"");
+  $("count").innerHTML=nf(rows.length)+" hit"+(rows.length===1?"":"s")+(shown<rows.length?(" (showing "+nf(shown)+")"+capWarnHtml(rows.length,MAXROWS)):"");
   var ths=$("tbl").getElementsByTagName("th");
   for(var j=0;j<ths.length;j++){ ths[j].onclick=function(e){ e=e||window.event; var t=e.target||e.srcElement;
     if(t && /\bcgrip\b/.test(t.className+"")) return;
@@ -5710,6 +6358,8 @@ function activeFilterDesc(){
   if(mdSet("evKind")) f.push("events kind in ["+mdDesc("evKind")+"]");
   if(mdSet("actUser")) f.push("actions user in ["+mdDesc("actUser")+"]");
   try{ if($("bruteOnly").checked) f.push("brute-force only (Logons/Audit)"); }catch(ebd){}
+  if(NBHONLY) f.push("non-business hours only - outside 08:00-18:00 host-local (Logons/Actions/Apache/Timeline)");   // v1.6
+  try{ if($("evNbh").checked) f.push("events: non-business hours only"); }catch(en9){}
   if(EVQ) f.push('events search "'+EVQ+'"');
   if(EVFROM||EVTO) f.push("events window");
   if(PIVOT) f.push("timeline pivot ±15 min @ "+fmtTime(PIVOT.center,true));
@@ -5751,12 +6401,19 @@ function generateReport(){
       if(PIVOT){ b1=[]; for(i7=0;i7<_T.length;i7++){ r7=_T[i7];
         if((r7.mtime>=PIVOT.from&&r7.mtime<=PIVOT.to)||(r7.ctime>=PIVOT.from&&r7.ctime<=PIVOT.to)
          ||(r7.crtime>=PIVOT.from&&r7.crtime<=PIVOT.to)||(r7.atime>=PIVOT.from&&r7.atime<=PIVOT.to)) b1.push(r7); } _T=b1; }
-      var mS=0,noT=false,toO=false; try{ mS=parseInt($("evMinScore").value,10)||0; noT=$("evNotable").checked; toO=$("evToolOnly").checked; }catch(ee2){}
+      // v1.6: non-business-hours filter, applied only to the datasets whose tabs carry it
+      if(NBHONLY){
+        b1=[]; for(i7=0;i7<_L.length;i7++){ if(_L[i7].epoch && isNbh(_L[i7].epoch)) b1.push(_L[i7]); } _L=b1;
+        b1=[]; for(i7=0;i7<_AC.length;i7++){ if(_AC[i7].epoch && isNbh(_AC[i7].epoch)) b1.push(_AC[i7]); } _AC=b1;
+        b1=[]; for(i7=0;i7<_W.length;i7++){ if(_W[i7].epoch && isNbh(_W[i7].epoch)) b1.push(_W[i7]); } _W=b1;
+        b1=[]; for(i7=0;i7<_T.length;i7++){ if(nbhTimeRow(_T[i7])) b1.push(_T[i7]); } _T=b1; }
+      var mS=0,noT=false,toO=false,nbhE7=false; try{ mS=parseInt($("evMinScore").value,10)||0; noT=$("evNotable").checked; toO=$("evToolOnly").checked; nbhE7=$("evNbh").checked; }catch(ee2){}
       b1=[]; for(i7=0;i7<EVENTS.length;i7++){ var e7=EVENTS[i7];
         if(e7.score<mS) continue;
         if(!mdPass("evKind", e7.kind)) continue;
         if(noT && !NOTABLE_KINDS[e7.kind]) continue;
-        if(hiT && hasTag(e7,"TOOLING")) continue;
+        if(toO && !hasTag(e7,"TOOLING")) continue;   // v1.6 fix: was `hiT` (undefined leftover of the old hide-TOOLING filter) - threw and killed the filtered report
+        if(nbhE7 && !(e7.epoch && isNbh(e7.epoch))) continue;   // v1.6: non-business hours
         if(EVQ && e7.blob.indexOf(EVQ)<0) continue;
         if(EVFROM||EVTO){ var d7=eventDay(e7.epoch); if(EVFROM&&d7<EVFROM) continue; if(EVTO&&d7>EVTO) continue; }
         b1.push(e7); } _E=b1;
@@ -5811,6 +6468,21 @@ function generateReport(){
     if(BOOTS.length) ov.push('<h3>Boot history (journalctl --list-boots)</h3>'+repTable(["Idx","Boot ID","First entry","Last entry"],
       repRows(BOOTS, 60, function(r){ return {cls:"", cells:[r.idx, r.id.substring(0,12)+"…", r.first, r.last]}; })));
     section("overview","Overview", ov.join(""));
+    // --- Security assessment (v1.6) ---
+    var SECF=computeSecurity();
+    var secCorr=[], secPost=[], secApache=[], sF=0,sW=0,sP=0,sN=0, si;
+    for(si=0;si<SECF.length;si++){ var sf2=SECF[si];
+      if(sf2.status==="FAIL") sF++; else if(sf2.status==="WARN") sW++; else if(sf2.status==="PASS") sP++; else sN++;
+      (sf2.cat==="correlation"?secCorr:(sf2.cat==="apache"?secApache:secPost)).push(sf2); }
+    secCorr.sort(secSort); secPost.sort(secSort); secApache.sort(secSort);
+    function secRep(arr){ return repTable(["Result","Check","Evidence"],
+      {rows:(function(){ var o=[]; for(var q=0;q<arr.length;q++){ var r=arr[q];
+        o.push({cls:(r.status==="FAIL"?"flag":(r.status==="WARN"?"warn":"")), cells:[r.status, r.name, r.evidence+(r.ep?("  ["+fmtTime(r.ep,true)+"]"):"")]}); } return o; })(), total:arr.length, shown:arr.length}); }
+    section("security","Security assessment",
+      '<p><b>'+sF+'</b> fail · <b>'+sW+'</b> warn · '+sP+' pass · '+sN+' n/a. Heuristic leads over everything parsed - confirm each FAIL against the underlying data.</p>'
+      +'<h3>Compromise indicators &amp; correlations</h3>'+secRep(secCorr)
+      +'<h3>OS hardening posture</h3>'+secRep(secPost)
+      +'<h3>Apache hardening posture</h3>'+secRep(secApache));
     // --- Inventory ---
     section("inventory","Inventory", repTable(["Category","Artifact","Present","Size / files"],
       repRows(INVENTORY, 400, function(r){ return {cls:"", cells:[r.cat, r.name, r.present?"present":"absent", r.present?((r.kind==="dir"||r.kind==="userfile")?(nf(r.count)+" file(s)"):fmtSize(r.size)):"-"]}; })));
@@ -5855,10 +6527,28 @@ function generateReport(){
       repRows((function(){ var a=[]; for(var i6=0;i6<_E.length;i6++){ if(_E[i6].score>=1||useFilters) a.push(_E[i6]); } return a; })(), 1000,
         function(r){ return {cls:repCls(r.score), cells:[fmtTime(r.epoch,true), r.kind, r.score, trunc(r.label,160), r.src]}; }),
       useFilters?"Events matching the active filters, chronological.":"Scored events in chronological order (score-0 context rows omitted)."));
-    // --- Apache logs ---
-    section("weblogs","Apache logs", repTable(["Score","When","Client IP","Geo/ASN","Method","Status","URI","User-Agent"],
+    // --- Apache Web Server (v1.6: config summary + logs) ---
+    var wb=[];
+    if(APACHECFG&&APACHECFG.present){ var AC2=APACHECFG;
+      wb.push('<h3>Apache configuration</h3>'+repTable(["Directive","Value"],
+        {rows:[
+          {cls:"", cells:["Source", AC2.base+" ("+AC2.flavor+") · "+nf(AC2.files)+" enabled file(s)"]},
+          {cls:(lc(AC2.user||"")==="root"?"flag":""), cells:["Runs as", (AC2.user||"(no User directive)")+(AC2.group?(" / "+AC2.group):"")]},
+          {cls:(lc(AC2.tokens)==="prod"?"":"warn"), cells:["ServerTokens", AC2.tokens||"(unset - default Full)"]},
+          {cls:(lc(AC2.signature)==="on"?"warn":""), cells:["ServerSignature", AC2.signature||"(unset - default Off)"]},
+          {cls:(lc(AC2.trace)==="off"?"":"warn"), cells:["TraceEnable", AC2.trace||"(unset - default On)"]},
+          {cls:"", cells:["Listen", AC2.listen.join(", ")||"-"]},
+          {cls:"", cells:["DocumentRoot", AC2.docroots.join(", ")||"-"]},
+          {cls:((contains(AC2.modules,"ssl")||AC2.sslOn)?"":"warn"), cells:["TLS", (contains(AC2.modules,"ssl")||AC2.sslOn)?("ssl enabled"+(AC2.sslproto?(" · "+AC2.sslproto):"")):"not configured - HTTP only"]},
+          {cls:(AC2.indexes.length?"warn":""), cells:["Directory listing", AC2.indexes.length?("Options Indexes in "+AC2.indexes.join(", ")):"off"]},
+          {cls:(AC2.statusOn?"warn":""), cells:["mod_status", AC2.statusOn?"enabled":"not enabled"]},
+          {cls:"", cells:["Modules", nf(AC2.modules.length)+" enabled: "+trunc(AC2.modules.join(", "),200)]}
+        ], total:11, shown:11},
+        "Scored CIS-style checks for this configuration are in the Security assessment section.")); }
+    wb.push('<h3>Access logs</h3>'+repTable(["Score","When","Client IP","Geo/ASN","Method","Status","URI","User-Agent"],
       repRows(_W, REPORT_ROWCAP, function(r){ return {cls:repCls(r.score), cells:[repScore(r), r.epoch?fmtTime(r.epoch,true):"-", r.ip, geoTip(r.ip), r.method, r.status, trunc(r.uri,140), trunc(r.ua,60)]}; }, true),
       WEBCAP.total?("Parsed "+nf(WEBCAP.total)+" request lines"+(WEBCAP.total>WEBCAP.shown?(", "+nf(WEBCAP.shown)+" stored (cap)"):"")+"."):""));
+    section("weblogs","Apache Web Server", wb.join(""));
     // --- Audit ---
     section("audit","Audit", repTable(["Score","When","Type","User","Source IP","Detail"],
       repRows(_A, REPORT_ROWCAP, function(r){ return {cls:repCls(r.score), cells:[repScore(r), fmtTime(r.epoch,true), r.typ, r.user, r.ip, trunc(r.detail,160)]}; }, true)));
@@ -5869,7 +6559,7 @@ function generateReport(){
     // --- Apps ---
     var ap=[];
     ap.push('<h3>Recent package activity</h3>'+repTable(["When","Action","Package","Requested by"],
-      repRows(_K, 300, function(r){ return {cls:(r.susp?"warn":""), cells:[r.when, r.action, r.pkg+(r.susp?(" [SUS: "+r.susp+"]"):""), r.by||"-"]}; })));
+      repRows(_K, 5000, function(r){ return {cls:(r.susp?"warn":""), cells:[r.when, r.action, r.pkg+(r.susp?(" [SUS: "+r.susp+"]"):""), (pkgUserRequested(r)?"[USER-REQ] ":"")+(r.by||"-")]}; })));
     ap.push('<h3>Containers</h3>'+repTable(["Score","Engine","Image","Command","Status","Name"],
       repRows(_C, 100, function(r){ return {cls:repCls(r.score), cells:[repScore(r), r.engine, r.image, trunc(r.cmd,60), r.status, r.names]}; }, true)));
     section("apps","Apps", ap.join(""));
@@ -5967,16 +6657,21 @@ function init(){
   $("q").onkeyup=function(){ if(qTimer) window.clearTimeout(qTimer);
     qTimer=window.setTimeout(function(){ QUERY=trimStr($("q").value).toLowerCase(); render(); },150); };
   $("susOnly").onclick=function(){ SUSONLY=this.checked; render(); };
+  $("nbhOnly").onclick=function(){ NBHONLY=this.checked; render(); };   // v1.6
+  $("evNbh").onclick=function(){ render(); };                           // v1.6
   $("scoreMin").onchange=function(){ SCOREMIN=parseInt(this.value,10)||0; render(); };   // v1.5.1
   function setTz(on){ TZVIEW=on;
     try{ $("tzMain").checked=on; }catch(e1){} try{ $("tzLogs").checked=on; }catch(e2){} try{ $("evTz").checked=on; }catch(e3){}
     try{ $("tzOv").checked=on; }catch(e4){} try{ $("tzPersist").checked=on; }catch(e5){} try{ $("tzApps").checked=on; }catch(e6){}
+    try{ $("tzSec").checked=on; }catch(e7){}   // v1.6
     render(); }
   $("tzMain").onclick=function(){ setTz(this.checked); };
   $("tzLogs").onclick=function(){ setTz(this.checked); };
   $("tzOv").onclick=function(){ setTz(this.checked); };        // v0.16
   $("tzPersist").onclick=function(){ setTz(this.checked); };   // v0.16
   $("tzApps").onclick=function(){ setTz(this.checked); };      // v0.16
+  $("tzSec").onclick=function(){ setTz(this.checked); };       // v1.6
+  $("secExport").onclick=exportSecurity;                       // v1.6
   $("logsExport").onclick=exportLogs;
   $("loadJournal").onclick=loadJournalWsl;
   // Events tab controls
@@ -6013,11 +6708,13 @@ function init(){
   $("bruteOnly").onclick=function(){ render(); };        // v1.3
   $("pfMinScore").onchange=function(){ render(); };      // v0.16
   $("pkgSusOnly").onclick=function(){ render(); };       // v0.17
+  $("pkgUserReqOnly").onclick=function(){ render(); };   // v1.6
   $("usersEnabledOnly").onclick=function(){ render(); }; // v0.17
   $("usersByGrpBtn").onclick=function(){ USERS_BYGRP=!USERS_BYGRP; this.className=USERS_BYGRP?"btn on":"btn"; render(); };  // v0.17
   $("dfrom").onchange=function(){ DFROM=dayNum(this.value); if(LASTROOT){ reparseTimeline(); } };
   $("dto").onchange=function(){ DTO=dayNum(this.value); if(LASTROOT){ reparseTimeline(); } };
   $("clearBtn").onclick=function(){ $("q").value=""; QUERY=""; $("susOnly").checked=false; SUSONLY=false;
+    NBHONLY=false; try{ $("nbhOnly").checked=false; }catch(e4){}   // v1.6
     SCOREMIN=0; try{ $("scoreMin").value="0"; }catch(e3){}   // v1.5.1
     mdClearAll(); USERS_SEL={}; renderUsersDropBtn();   // v0.17: clears every multiselect filter too
     try{ $("netPubOnly").checked=false; }catch(e){} try{ $("bruteOnly").checked=false; }catch(e2){} render(); };
@@ -6122,6 +6819,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Network</b> - IOC hit (+3), ESTABLISHED to a public IP (+2), LISTEN on a non-standard high port (+1), owning process itself flagged (+2). v0.5: /proc/net/tcp|udp are hex-decoded and cross-checked against ss - a LISTEN socket <b>missing from ss</b> is flagged (+3, rootkit tell), and socket <b>ownership is recovered</b> (uid -&gt; passwd, fd-inode -&gt; pid) on non-root captures where ss shows no process column.</li>
       <li><b>Logons</b> (auth.log/secure - <b>ISO-8601 and classic syslog timestamps</b> - plus wtmp/btmp/lastlog binaries decoded directly, and last/lastb text). Events: SSH accepted/failed, <b>sudo</b>, <b>pkexec</b> (polkit privesc), <b>pam sessions</b> (root-cron noise suppressed), <b>account changes</b> (useradd/passwd), su, and per-account <b>lastlog</b>. Scores: IOC (+3), public-IP source (+2), failed auth (+1), ≥5 failures from one IP i.e. brute/spray (+2), accepted-after-brute (+3), root from public IP (+1), <b>service account with an interactive login</b> (+3), <b>new account with a login shell</b> (+4), privesc running a temp/shell/hidden command (+2), account change (+2).</li>
       <li><b>Timeline</b> - IOC path hit (+3), executable under a temp path (+1), hidden component (+1), setuid/setgid (+1).</li>
+      <li><b>Actions</b> (v1.6) - every history line is scored across the attacker playbook. Hostile-on-their-own (3+): reverse-shell/decoder one-liners (nc, socat, sh -i, base64 -d, python -c, /dev/tcp), /etc/shadow access, scanners (nmap, masscan, ...), offensive tools (hydra, sqlmap, linpeas, chisel, ...), account manipulation (useradd/usermod/visudo), authorized_keys appends, web-root script drops, anti-forensics (history -c, shred, log wipes, timestomp), setuid chmod. Breadcrumbs (1-2) that stack into red rows when chained: recon (whoami, id, uname, ps, netstat, ip a), /etc/passwd &amp; sudoers &amp; SSH-key reads, URL fetches (+1 more for raw-IP/explicit-port or script payloads), chmod +x, sudo -l / SUID hunting, remote copy (scp/rsync), outbound ssh, tcpdump, kernel modules, cron/rc-file edits, dual-use tool installs, temp-path references. Hover any tag for the exact reasons.</li>
       <li><b>Persistence &amp; system findings</b> (Overview) - command lines pulled from cron / systemd <code>ExecStart=</code> / authorized_keys forced-commands / rc.local, scored with the process heuristics (IOC, temp path, shell one-liner, pipe-to-shell, URL fetch); a non-empty <code>ld.so.preload</code> is flagged (+3). v0.5 adds: <b>systemd timers</b> (list-timers), <b>account findings</b> (extra UID-0 +3, service account with a shell +2, docker-group members +1), <b>suid/getcap/world-writable/hidden-file sweeps</b> (+2, stock-system entries whitelisted), UAC's <b>null-passphrase SSH private keys</b> (+2), and <b>shell-history</b> one-liners incl. anti-forensics (history -c / shred, +2).</li>
       <li><b>IOC hits</b> - a tree-wide line sweep of every texty file &lt; 5 MB against your IOC list (also written to <code>ioc_hits.csv</code>), <em>plus</em> SHA1-shaped IOC terms matched against <code>hash_executables</code> to catch <b>dormant</b> on-disk implants that aren't running.</li>
     </ul>
@@ -6140,6 +6838,8 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
       <li><b>Inventory tab</b> - a map of every key artifact (processes, network, logons, accounts, persistence, system, filesystem, logs, containers) showing present/absent, size, and an <b>open folder</b> link that opens the raw file in Explorer. The Persistence &amp; config inventory on Overview has the same open-folder links; click an artifact name there to view its contents inline.</li>
       <li><b>UI (v0.7):</b> the Processes table has a <b>Name</b> column and a <b>Tree view</b> toggle (collapsible parent/child hierarchy - click ▸/▾ to fold, a row for detail). <b>Logons</b> has User / Source / Result filters and a clickable link to each raw source log. <b>Events</b> has a min-score filter and a kind filter. Long tables keep their <b>header row frozen</b> while scrolling, and <b>Persistence &amp; system findings</b> shows a date/time column.</li>
       <li><b>Resizable columns</b> everywhere - drag the right edge of any column header (it highlights on hover); double-click the edge to reset. Widths persist per view.</li>
+      <li><b>Security tab (v1.6.0):</b> a new <b>Security</b> tab runs an automated assessment over everything already parsed - no re-reading, computed fresh each view. Two halves: <b>compromise-indicator correlations</b> that join data across tabs (brute-force that <em>succeeded</em>, interactive/root logins from public IPs or outside business hours, reverse-shell/scanner/offensive-tool execution, the download→chmod+x chain, anti-forensics, account creation from a shell, persistence files modified <em>after</em> the first suspicious logon, data staging/exfil, an SSH key authorized on multiple accounts, null-passphrase private keys, timestomp candidates, logins from multiple countries), and a <b>hardening-posture checklist</b> (sshd root-login / password-auth / empty-passwords, PAM auth-stack weaknesses, extra UID-0 and duplicate-UID accounts, blank-password accounts, password aging (login.defs), service accounts with shells, sudoers NOPASSWD grants, SSH extras (X11Forwarding / MaxAuthTries / PermitUserEnvironment), privileged/host-namespace containers, auditd presence, <b>firewall enabled/disabled</b> (ufw status / ufw.conf / firewalld) plus the ruleset-vs-0.0.0.0-listeners check, <b>non-standard listening services</b> on externally-reachable interfaces (the "why is velociraptor on 8000" check), SELinux/AppArmor state, kernel-hardening sysctls (ASLR, fs.suid_dumpable, SYN cookies, ip_forward-vs-containers), /tmp noexec+nosuid, NTP clock sync (evidence integrity), patch recency, non-baseline SUID/world-writable/capabilities, EOL distro, docker/sudo/wheel membership) - retitled <b>OS Hardening Posture</b> - and a third table, <b>Apache Hardening Posture</b>: CIS Apache 2.4-inspired checks over the ENABLED configuration in /etc/apache2 | /etc/httpd (ServerTokens/ServerSignature, TraceEnable, run-as user, directory listing, mod_status exposure, risky modules incl. WebDAV/CGI/autoindex, TLS presence + deprecated protocols, AllowOverride All, logging). The <b>Apache logs</b> tab is renamed <b>Apache Web Server</b> and opens with an <b>Apache Configuration</b> section - the key effective directives with at-a-glance review chips - above the access logs; the HTML report mirrors both. Every check reads <b>PASS / WARN / FAIL</b>, or <b>N/A</b> when the source artifact wasn't collected (so a logs-only or non-root capture never shows a false all-clear); a banner rolls up the counts, rows sort worst-first, clicking a finding pivots the Timeline or jumps to the source tab, and it exports to CSV and into the HTML report. Findings are heuristic leads to confirm, not verdicts.</li>
+      <li><b>Actions scoring overhaul + Logons subheadings + package Action filter (v1.6.0):</b> the <b>Actions</b> tab now scores the whole attacker playbook, not just the outright-hostile one-liners: <b>discovery</b> commands (whoami / id / uname / ps / netstat / ss / ip a / cat /etc/hosts…, +1 RECON), <b>credential access</b> (/etc/shadow +3, /etc/passwd &amp; sudoers +2, SSH key material +2, CRED-ENUM), <b>scanners</b> (nmap / masscan / arp-scan… +3 NET-SCAN) and <b>offensive tools</b> (hydra / sqlmap / linpeas / chisel… +3 OFFTOOL; installing one via apt/pip is +2 TOOL-INSTALL), <b>chmod +x</b> (+2, setuid bits +3), <b>SUID/sudo -l hunting</b> (+2), <b>account manipulation</b> (useradd / usermod / visudo… +3), <b>persistence edits</b> (authorized_keys append +3; cron / rc-file edits +2), broader <b>anti-forensics</b> (history/log wipes, timestomping, now +3) and <b>security-control disabling</b> (setenforce 0 / auditd stop / ufw disable +2), <b>remote copy</b> (scp/rsync/sftp to a host +2 EXFIL), <b>outbound ssh</b> (+1, root@ +2 LATERAL), <b>packet capture</b> (+2 SNIFF), <b>kernel modules</b> (+2 KMOD), <b>web-root script drops</b> (+3 WEBSHELL) and <b>ad-hoc HTTP servers</b> (+2 NET-SERVE); reverse-shell one-liners went to +3 and URL fetches to +2 (+1 more for raw-IP/explicit-port or script payloads). Tag hovers explain every reason, and new tags carry candidate ATT&amp;CK mappings. The <b>Logons</b> tab labels its two halves - <b>Outbound SSH Connections</b> (the lateral-movement table) and <b>Inbound SSH &amp; Interactive Logons</b> (the event grid). <b>Recent package installs</b> (Apps) gets an inline header row with an <b>Action</b> multiselect filter (install / upgrade / remove / purge / …), a <b>User-Requested Only</b> filter, and a green <b>USER-REQ</b> chip on every package a human explicitly asked for (apt <code>Requested-By</code> / typed <code>apt install</code>), separating them at a glance from unattended-upgrade and cron noise (also marked in the report). A <b>Non-Business Hours</b> filter on <b>Logons, Actions, Events, Apache logs and Timeline</b> shows only rows timestamped outside business hours in the collector host's local time - <b>Mon-Fri 08:00-18:00, with the whole weekend treated as out-of-hours</b> (offset from uac.log; treated as UTC when the capture carried none) - untimestamped rows are hidden while it's on, a Timeline row stays if <em>any</em> of its four times is out-of-hours, the Logons By-source-IP view re-aggregates from out-of-hours events only, and the filtered report honours it. Bug fix: a filtered report with the Events <b>Dual-Use Apps</b> filter active no longer dies on an undefined variable (<code>hiT</code>, a leftover of the old hide-TOOLING toggle). <b>Row-cap honesty:</b> the shared display cap was raised (5,000 → <b>10,000</b> rows), the previously-<em>silent</em> caps on the package table (was 300) and the persistence-findings table (2,000) now disclose, and every capped table shows a prominent red <b>⚠ Maximum Rows Exceeded</b> chip (with a tooltip that points at the filters and the uncapped <b>Export → CSV</b>) whenever the filtered set is larger than what's rendered - so a truncated grid can never again read as the complete picture. (Display caps are a render-time performance bound; CSV export always writes every filtered row, and the case window <code>/from /to</code> narrows the timeline at parse time.)</li>
       <li><b>Score filter (v1.5.1):</b> a <b>Score</b> min-score dropdown (any / ≥1 / ≥3 / ≥5) on the Processes, Network, Timeline, Apache logs and Actions tabs - independent of the SUSPICIOUS ONLY flag, and honoured by the filtered report. Also: "Flagged only" is now "SUSPICIOUS ONLY", the Logon chart title is Title-Cased, and a little more breathing room above System Overview.</li>
       <li><b>Charts + polish (v1.5):</b> the <b>Logons</b> tab now opens with a <b>logon-activity-over-time</b> chart (accepted/session green vs failed red, per day - a tall red column is a brute-force day), and the <b>Network</b> tab with a <b>connections-by-country</b> distribution (ss is a point-in-time snapshot, so it's a distribution, not a time series; falls back to service type / socket state without geo). Also: Provisioning baseline (cloud-init) moved to the very top of the Overview; a divider above the sar summary; Log Integrity tab moved next to UAC Inventory; every filter label and dropdown is Title-Cased ("Dual-Use Apps", "Notable Events", "Online Geo/ASN lookups", "Location/Type/User/Source/Result/Suspicion/Accounts"); table headings Title-Cased ("Logon Events", "User Accounts", ...); heading descriptions sentence-capitalized; and the boots Idx column left-aligned.</li>
       <li><b>Presentation pass, cont. (v1.4.1):</b> Generate report is green; all Host-TZ toggles read "Host TZ"; the Events "TOOLING only" filter is now "Dual Use Apps"; the Events and Log-Integrity tabs got violet Export buttons; the Events tab gained a heading + description; the Logs tab is renamed "Log Integrity"; the Actions tab sits left of Events; and the sar %usr/%idle columns are left-aligned.</li>

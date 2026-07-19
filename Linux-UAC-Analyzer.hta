@@ -2785,7 +2785,11 @@ function parseCtrRuntime(root, engine){
   function indentOf(s){ var m=s.match(/^\s*/); return m?m[0].length:0; }
   for(i=0;i<lines.length;i++){ var raw=lines[i].replace(/\r$/,""); var t=trimStr(raw); if(!t) continue;
     var ind=indentOf(raw);
-    if(listKey){ if(ind>listIndent && t.indexOf(":")<0){   // plain list items only (skip "Profile: x" sub-keys)
+    // a list item is indented past the section key and is NOT a "Word: value" sub-key. Registry
+    // entries (203.0.113.50:5000, ::1/128) and mirror URLs (http://…) legitimately contain colons,
+    // so "no colon" was wrong - test for a leading word-key + colon-SPACE instead (Profile: builtin).
+    if(listKey){ var isSubKey=/^[A-Za-z][A-Za-z0-9 .\/_-]*:\s/.test(t);
+      if(ind>listIndent && !isSubKey){
         if(listKey==="insecure") rt.insecureReg.push(t);
         else if(listKey==="mirrors") rt.mirrors.push(t);
         else if(listKey==="secopts") rt.secOpts.push(t);

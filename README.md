@@ -51,6 +51,10 @@ Nineteen tabs:
 | **Logs** | journal filenames, syslog, kern.log, auditd summary | Log-integrity checks, journal rotation analysis, service inventory, notable events, optional **journal contents via WSL** |
 | **IOC hits** | tree sweep + `hash_executables` | Line-scan of the whole tree plus SHA1 matches against dormant on-disk executables |
 
+![Containers tab — coverage map, runtime metadata and a scored inventory](screenshots/containers.png)
+
+> The **Containers** tab (v1.9) is scoped to the point-in-time state a UAC capture actually holds — a collection-coverage map, docker/podman runtime metadata with findings, an inventory that keeps stopped containers visible, and a per-container inspect deep-dive (lifecycle, execution, isolation/exposure scoring, `docker diff`). It never claims Docker event history.
+
 A **Non-Business Hours** filter on the time-based tabs (Logons, Actions, Events, Apache logs, Timeline) isolates activity outside **Mon–Fri 08:00–18:00 host-local, weekends included** — the collector's own timezone, not the analyst's. Optional **online geo/ASN enrichment** (checkbox, default on) tags public IPs with country + ASN across all views — only the bare IP list leaves the machine, and an `offline.txt` beside the app disables every outbound feature. Findings carry **possible MITRE ATT&CK technique mappings** (heuristic candidates, not confirmed behaviour). Rotated **`.gz` logs** are inflated automatically (into a per-run cache when the input is an extracted evidence folder — source evidence is never modified).
 
 ![Logons tab — a brute-force that succeeded](screenshots/logon.png)

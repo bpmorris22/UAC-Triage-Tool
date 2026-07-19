@@ -66,11 +66,11 @@
   .mdpanel{position:absolute;top:105%;left:0;z-index:80;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 10px;max-height:230px;overflow:auto;min-width:150px;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.5)}
   .wrap{padding:12px 14px}
   .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px}
-  .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
+  .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#e6edf3}
   /* v1.10.1: subhead now matches the canonical section-heading look (same as .card h3 / the
      Provisioning baseline heading) - 11px, bold, UPPERCASE, letter-spacing .5px, #8b949e. Inline
      description spans keep their own text-transform:none / weight:400, so they read normally. */
-  .subhead{margin:2px 0 6px;font-size:11px;font-weight:700;color:#8b949e;letter-spacing:.5px;text-transform:uppercase}
+  .subhead{margin:2px 0 6px;font-size:11px;font-weight:700;color:#e6edf3;letter-spacing:.5px;text-transform:uppercase}
   label.fld{display:block;margin:6px 0 2px;font-size:11px;color:#8b949e}
   input.txt,select,textarea{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:5px 8px;font-size:13px;font-family:Consolas,monospace}
   input.wide{width:62%}
@@ -93,7 +93,7 @@
   /* v1.4: per-tab table heading (shared table card) */
   /* v1.10.1: tab-level heading matches the canonical section-heading look (same as .card h3 / the
      Provisioning baseline heading). Its .d description keeps its normal-case muted styling. */
-  .tblhead{margin:0 0 8px;font-size:11px;font-weight:700;color:#8b949e;letter-spacing:.5px;text-transform:uppercase}
+  .tblhead{margin:0 0 8px;font-size:11px;font-weight:700;color:#e6edf3;letter-spacing:.5px;text-transform:uppercase}
   .tblhead .d{font-size:11px;font-weight:400;color:#8b949e;text-transform:none;letter-spacing:0;margin-left:8px}
   /* v1.5: mini charts (div-based - HTA IE mode has no reliable canvas) */
   .chart{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px 12px;margin-bottom:10px}
@@ -113,8 +113,12 @@
   .stat .l{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
   .stat.flag{border-color:#8b3a3a}.stat.flag .n{color:#ff6b6b}
   .stat.warn{border-color:#8a7a2a}.stat.warn .n{color:#e3b341}
-  .cards3{width:100%}
-  .col3{display:inline-block;width:32%;vertical-align:top;margin-right:1%}
+  /* v1.10.2: clear:both keeps the 3-column row BELOW the floated Host-TZ / Generate-report buttons -
+     otherwise the row's first line wraps around the float, only 2 columns fit beside it and the 3rd
+     drops below (surfaced once the provisioning baseline moved into the first column, raising the
+     row into the float's zone). 31% + 1.5% margins (97.5%) also leaves slack for the scrollbar. */
+  .cards3{width:100%;clear:both}
+  .col3{display:inline-block;width:31%;vertical-align:top;margin-right:1.5%}
   .kvgrid div{margin:2px 0;font-size:12px}
   .kvgrid .k{display:inline-block;width:130px;color:#8b949e}
   table{width:100%;border-collapse:collapse;font-size:12px}
@@ -282,14 +286,13 @@
         <label style="font-size:12px;margin-right:10px" title="Render times in the collector's host time zone instead of UTC (applies everywhere)."><input type="checkbox" id="tzOv"> Host TZ</label>
         <button class="btn green" id="reportBtn" title="Write a self-contained HTML report of everything parsed (all tabs, navigation pane, scored tables capped at the highest-signal rows) into the output folder and open it.">Generate report</button>
       </span>
-      <!-- v1.5: provisioning baseline sits at the very top (when present), then System Overview -->
-      <div id="ovCloud"></div>
-      <!-- v1.4: System overview, then the sar / network / boots context blocks -->
-      <!-- v1.10.1: the "System Overview" heading now lives inside the first grid column so all three
-           column headings share a top edge - Datasets / Top findings no longer sit below a band of
-           empty space next to the System Overview title. -->
+      <!-- v1.10.2: the provisioning baseline (when present) and System Overview are stacked in the
+           first grid column, so Datasets / Top findings rise to the top of columns 2 and 3 - inline
+           with the Provisioning baseline heading - instead of sitting below the full-width baseline
+           block in a band of empty space. -->
       <div class="cards3" style="margin-top:20px">
         <div class="col3">
+          <div id="ovCloud"></div>
           <h3 title="Run metadata parsed from uac.log, the per-dataset counts, and the highest-scoring findings across every dataset - the at-a-glance triage summary.">System Overview</h3>
           <div class="kvgrid" id="ovMeta"></div>
         </div>
@@ -520,7 +523,13 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "1.10.1";
+var APP_VERSION = "1.10.2";
+/* v1.10.2 - Overview layout + white headings (operator follow-up):
+   - section headings are now WHITE (#e6edf3) instead of grey across .card h3 / .tblhead / .subhead;
+     their description spans stay muted grey.
+   - Overview: the provisioning baseline stacks above System Overview inside the first column, so
+     Datasets and Top findings rise to the top of columns 2/3 - inline with the Provisioning
+     baseline heading - instead of below the full-width baseline block. */
 /* v1.10.1 - UI consistency pass:
    - section-heading styling unified across every tab: .tblhead (tab titles) and .subhead
      (sub-sections) now render like the .card h3 / "Provisioning baseline" reference - 11px, bold,
@@ -5647,7 +5656,8 @@ function cloudInitHtml(){
   H.push(kvRow("User-data scripts ran", c.userData?"YES - review /var/lib/cloud for the script":"no"));
   H.push(kvRow("SSH keys injected at provision", c.keys?(nf(c.keys)+" event(s)"):"none seen"));
   H.push('</div>');
-  return H.join("");
+  // v1.10.2: the baseline now stacks above System Overview in the same column - add spacing below it
+  return '<div style="margin-bottom:18px">'+H.join("")+'</div>';
 }
 /* v0.14: journalctl --list-boots table (moved from the Logs tab - boot cadence is capture context) */
 function bootsHtml(){
